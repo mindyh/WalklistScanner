@@ -14,13 +14,13 @@ import shutil
 import sys
 from imutils.object_detection import non_max_suppression
 import pytesseract
-
+from enum import Enum
 
 __DEBUG__ = True
 REFPTS_FILENAME = 'ref_bounding_boxes.json'
 MAX_BARCODES_ON_PAGE = 8
 # pixels, as measured from the top of one line of voter info to the top of the next one
-DISTANCE_BT_VOTERS = 123   
+DISTANCE_BT_VOTERS = 123  
 TEMP_DIR = 'temp/'
 
 
@@ -29,6 +29,9 @@ def parse_args():
   ap = argparse.ArgumentParser()
   ap.add_argument("-w", "--walklist", required=True,
     help="path to pdf of walklist")
+  ap.add_argument("-r", "--response_codes",
+    help="If you have already marked the response codes to for this list_id, pass it in here. \
+          Should be of the format [list_id]_response_codes.json.")
   return vars(ap.parse_args())
 
 def show_image(image):
@@ -40,11 +43,18 @@ def show_image(image):
 
 
 def load_ref_boxes():
-  points = {}
-  with open(REFPTS_FILENAME, "r+") as f:
-      points = json.load(f)
+  def box_dict_to_tuples(bounding_box):
+    return [(bounding_box["0"][0], bounding_box["0"][1]), 
+      (bounding_box["1"][0], bounding_box["1"][1])]
 
-  return points
+  boxes = {}
+  with open(REFPTS_FILENAME, "r+") as f:
+      boxes = json.load(f)
+
+  for (name, box) in boxes.items():
+    boxes[name] = box_dict_to_tuples(box)
+
+  return boxes
 
 
 def save_points(refPts):
@@ -112,17 +122,16 @@ def check_for_errors(args):
   os.mkdir(TEMP_DIR)
 
 
-""" Returns (barcode_coordinates, voter_id)"""
+""" Returns (barcode_coords, voter_id)"""
 def extract_barcode_info(barcode, image):
-  voter_id = barcode.data.decode("utf-8")
-  barcode_coordinates = barcode.polygon
+  data = barcode.data.decode("utf-8")    
+  voter_id = data[-3]  # remove the CA at the end
+  barcode_coords = barcode.polygon
 
   # draw image
   if __DEBUG__:
     # extract the the barcode
     (x, y, w, h) = barcode.rect
-    print ("rect", barcode.rect)
-    print ("poly", barcode.polygon)
 
     pts = np.array([[[x, y] for (x, y) in barcode.polygon]], np.int32)
     cv2.polylines(image, pts, True, (0, 0, 255), 2)
@@ -130,16 +139,15 @@ def extract_barcode_info(barcode, image):
 
     # the barcode data is a bytes object so if we want to draw it on
     # our output image we need to convert it to a string first
-
     # draw the barcode data and barcode type on the image
-    text = "{}".format(voter_id)
+    text = "{}".format(data)
     cv2.putText(image, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
       0.5, (0, 0, 255), 2)
 
     # print the barcode type and data to the terminal
-    print("[INFO] Found barcode: {}".format(voter_id))
+    print("[INFO] Found barcode: {}".format(barcode))
 
-  return barcode_coordinates, voter_id
+  return barcode_coords, voter_id
 
 
 refPts = []
@@ -147,7 +155,7 @@ is_cropping = False
 
 """The user draws a rectangle around the response codes, returns each
 response code and the global coordinates of it w.r.t. the original image."""
-def markup_clean_sheet(image):
+def markup_page(image):
   def click_and_drag(event, x, y, flags, param):
     # grab references to the global variables
     global refPts, is_cropping
@@ -171,13 +179,13 @@ def markup_clean_sheet(image):
       cv2.rectangle(image, refPts[0], refPts[1], (0, 0, 255), 2)
       cv2.imshow("markup", image)
 
-  # TODO: Ask the user to draw a rectangle around the response codes
-
   clone = image.copy()
   cv2.namedWindow("markup", cv2.WINDOW_AUTOSIZE)
   cv2.setMouseCallback("markup", click_and_drag)
 
-  print ("waiting for user to markup page.")
+  cv2.putText(image, "Click and drag to draw a box. Press enter when you are done. \
+              Press 'r' to reset.", 
+              (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
    
   # keep looping until the enter key is pressed
   # TODO: add message telling the user to hit enter to finish
@@ -194,8 +202,8 @@ def markup_clean_sheet(image):
     elif key == ord("\r"):
       break
 
-  save_points(refPts)
-
+  image = clone.copy()
+  cv2.destroyAllWindows()
   return refPts
 
 
@@ -209,8 +217,8 @@ def get_roi(image, bounding_box):
   rH = 1
   (origH, origW) = image.shape[:2]
 
-  startX, startY = bounding_box['0']
-  endX, endY = bounding_box['1']
+  startX, startY = bounding_box[0]
+  endX, endY = bounding_box[1]
 
   # scale the bounding box coordinates based on the respective
   # ratios
@@ -236,7 +244,12 @@ def get_roi(image, bounding_box):
   return roi
 
 
-def run_ocr(image, bounding_box):
+class SegmentationMode(Enum):
+  SINGLE_WORD = 8
+  BLOCK_OF_TEXT = 6
+
+
+def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD):
   roi = get_roi(image, bounding_box)
 
   # in order to apply Tesseract v4 to OCR text we must supply
@@ -245,14 +258,13 @@ def run_ocr(image, bounding_box):
   # (3) an PSM value, in this case, 6 which implies that we are
   # treating the ROI as a single block of text
   # config = ("-c tessedit_char_whitelist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' -l eng --oem 0 --psm 6")
-  config = ("-l eng --oem 1 --psm 6")
+  config = ("-l eng --oem 1 --psm %d" % segmentation_mode.value)
   text = pytesseract.image_to_string(roi, config=config)
   return text
 
 
 def get_list_id(image, bounding_box):
   text = run_ocr(image, bounding_box)
-  print (text)
   
   if "List ID:" not in text:
     print("get_list_id: could not read the list ID.")
@@ -267,14 +279,73 @@ def get_list_id(image, bounding_box):
   return list_id
 
 
-def get_scan_codes(image, bounding_box):
-  text = run_ocr(image, bounding_box)
-  scan_codes = text.split(': ')[1].split()
+class ResponseCode:
+  def __init__(self, bounding_box, question_number, value):
+    # Coordinates are calculated as the center of the
+    # bounding box around the scan code.
+    self.coords = ((bounding_box[0][0] + bounding_box[1][0]) / 2.0,
+      (bounding_box[0][1] + bounding_box[1][1]) / 2.0)
+    # The question it belongs to.
+    self.question_number = question_number
+    self.value = value
 
-  if __DEBUG__:
-    print ("extracted scan codes: ", scan_codes)
+  # A dict representation of the ResponseCode.
+  def get_dict(self):
+    return { "coords": self.coords, "question_number": self.question_number, 
+      "value": self.value }
 
-  return scan_codes
+
+def save_response_codes(response_codes, list_id):
+  response_code_dict = {}
+  for response_code in response_codes:
+    if response_code.question_number not in response_code_dict:
+      response_code_dict[response_code.question_number] = []
+    response_code_dict[response_code.question_number].append(response_code.get_dict())
+
+  with open("%s_response_codes.json" % list_id, "w+") as f:
+    json.dump(response_code_dict, f)
+
+
+# TODO: pull this out into its own pre-processing script.
+# Returns a list of ResponseCode objects.
+def get_response_codes(image, list_id):
+  response_codes = []
+  # Iterate through and mark each scan code.
+  question_number = 1
+  # all non-alphanumeric chars
+  while True:
+    print ("Please mark each response code in survey question %d." % question_number)
+
+    bounding_box = markup_page(image)
+    text = run_ocr(image, bounding_box, SegmentationMode.SINGLE_WORD)
+     # sometimes OCR picks up stray symbols, get rid of them.
+    text = ''.join(ch for ch in text if ch.isalnum())
+    response_code = ResponseCode(bounding_box, question_number, text)
+
+    print("Extracted scan code: \"%s\"" % response_code.value) 
+
+    while True:
+      print("Is this correct? [y|n]")
+      yes_no = input().lower()
+      if yes_no == "y":
+        break
+      else:
+        print("Please enter the correct response code: ")
+        response_code.value = input().lower()
+    
+    response_codes.append(response_code)
+
+    print ("Hit enter (no input) to mark another response in the same survey question. \
+            Enter 'n' to move to the next survey question. Enter 'q' to finish. [enter|n|q]")
+    next_step = input().lower()
+
+    if next_step == "n":
+      question_number += 1
+    elif next_step == "q":
+      break
+
+  save_response_codes(response_codes, list_id)
+  return response_codes
 
 
 def get_voter_id(image, bounding_box):
@@ -288,9 +359,30 @@ def get_voter_id(image, bounding_box):
   return voter_id
 
 
-def dict_to_tuples(bounding_box):
-  return [(bounding_box["0"][0], bounding_box["0"][1]), 
-    (bounding_box["1"][0], bounding_box["1"][1])]
+def get_response_roi_for_barcode(barcode_coords, first_response_coords):
+  response_h = first_response_coords[1][1] - first_response_coords[0][1]
+  return ((first_response_coords[0][0], barcode_coords[0][1]),
+          (first_response_coords[1][0], barcode_coords[0][1] + response_h))
+
+
+# Returns a list of circled response codes.
+def get_circled_responses(response_roi, answer_coordinates):
+  # threshold
+  # Diff
+  # centroiding
+  # Match to responses
+  return None
+
+
+def save_responses(responses, list_id):
+  pass
+  # filename = "%s.csv" % list_id
+  # for response in responses:
+  #   pass
+  # pass
+
+def load_response_codes():
+  pass
 
 
 def main():
@@ -303,24 +395,37 @@ def main():
 
   for page_number in range(num_pages):
     page = process_page(page_number)
-    # refPts = markup_clean_sheet(page)
+    # save_points(markup_page(page))
 
-    get_list_id(page, ref_bounding_boxes["list_id"])
-    get_scan_codes(page, ref_bounding_boxes["first_response_codes"])
-    # get_voter_id(page, ref_bounding_boxes["first_voter_id"])
+    list_id = get_list_id(page, ref_bounding_boxes["list_id"])
+    response_codes = []
+    if not arg.response_codes and page_number == 1:
+      response_codes = get_response_codes(page, list_id)
+    else:
+      response_codes = load_response_codes()
 
     # find the barcodes in the image and decode each of the barcodes
     barcodes = pyzbar.decode(page)
 
     # loop over the detected barcodes
     for barcode in barcodes:
-      (barcode_coordinates, voter_id) = extract_barcode_info(barcode, page)
+      (barcode_coords, voter_id) = extract_barcode_info(barcode, page)
+
+      # Get the corresponding response codes region
+      response_roi = get_response_roi_for_barcode(barcode_coords,
+                                                  ref_bounding_boxes["first_response_codes"])
+      # cv2.rectangle(page, response_roi[0], response_roi[1], (0, 0, 255), 1)
+
+      # Figure out which ones are circled
+      responses = get_circled_responses(response_roi, response_codes)
+
+      # Save to CSV
+      save_responses(responses, list_id)
 
     show_image(page)
 
-    # show the output image
     # if __DEBUG__:
-    # box = dict_to_tuples(ref_bounding_boxes["first_voter_id"])
+    # box = box_dict_to_tuples(ref_bounding_boxes["first_voter_id"])
     # # print (ref_bounding_boxes["first_response_codes"])
     # cv2.rectangle(page, box[0], box[1], (0, 0, 255), 1)
 
