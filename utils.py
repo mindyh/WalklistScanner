@@ -144,15 +144,14 @@ def get_page_filename(page_number):
   return '%s/page%d.jpg' % (TEMP_DIR, page_number)
 
 
-def load_page(page_number):
+def load_page(page_number, rotate_dir):
   image = cv2.imread(get_page_filename(page_number), 0)
+
+  if rotate_dir == "CW":
+    image = imutils.rotate_bound(image, 90)
+  else:
+    image = imutils.rotate_bound(image, 270)
   image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-  image = imutils.rotate_bound(image, 270)
-
-  # ret, image = cv2.threshold(image, 140, 255, cv2.THRESH_BINARY_INV)
-  # image = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
-  #             cv2.THRESH_BINARY, 11, 2)
-
   # TODO: deskew image
   # TODO: rectify image
 

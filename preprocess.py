@@ -25,6 +25,8 @@ def parse_args():
     help="For dev purposes, if you want to skip marking up the page")
   ap.add_argument("--single_markup", action='store_true', 
     help="For dev purposes, if you want to mark up a single box on the page")
+  ap.add_argument("--rotate_dir", default='CW', 
+    help="CW or CCW, rotate the page 90 degrees in that direction.")
   return vars(ap.parse_args())
 
 
@@ -209,7 +211,7 @@ def main():
   ingest_walklist(args["walklist"])
 
   page_number = 1
-  page = utils.load_page(page_number)
+  page = utils.load_page(page_number, args["rotate_dir"])
   if args["single_markup"]:
     box = markup_page(page)
     save_points(box)
