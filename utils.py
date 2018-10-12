@@ -17,6 +17,12 @@ TEMP_DIR = 'temp/'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
 REFPTS_FILENAME = 'ref_bounding_boxes.json'
 
+def add_padding(bounding_box, padding, page_size):
+  return ((max(0, bounding_box[0][0] - padding),
+           max(0, bounding_box[0][1] - padding)), 
+          (min(bounding_box[1][0] + padding, page_size[1]),
+           min(bounding_box[1][1] + padding, page_size[0])))
+
 
 def show_image(image):
   # show the output image

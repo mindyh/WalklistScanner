@@ -32,9 +32,8 @@ def save_points(refPts, point_name="new_point"):
   points = utils.load_ref_boxes()
 
   # Add and save new ones
+  points[point_name] = []
   for point in refPts:
-    if point_name not in points:
-      points[point_name] = []
     points[point_name].append(point)
 
   with open(utils.REFPTS_FILENAME, "w+") as f:
@@ -185,7 +184,7 @@ def save_response_codes(response_codes):
 
 
 # Get the box around the all the respond codes.
-def get_response_codes_roi(response_codes):
+def get_response_codes_roi(response_codes, page):
   x_min = 99999999  # TODO: switch out for INT_MAX
   x_max = 0
   y_min = 99999999
@@ -197,7 +196,8 @@ def get_response_codes_roi(response_codes):
     x_max = max(x_max, response_code.bounding_box[1][0])
     y_max = max(y_max, response_code.bounding_box[1][1])
 
-  return ((x_min, y_min), (x_max, y_max))
+  return utils.add_padding(((x_min, y_min), (x_max, y_max)), 20,
+                           page.shape[:2])
 
 
 def main():
@@ -209,20 +209,19 @@ def main():
   ingest_walklist(args["walklist"])
 
   page_number = 1
+  page = utils.load_page(page_number)
   if args["single_markup"]:
-    page = utils.load_page(page_number)
     box = markup_page(page)
     save_points(box)
 
   response_codes = []
   if not args["skip_markup"]:
-    page = utils.load_page(page_number)
     response_codes = markup_response_codes(page)
     save_response_codes(response_codes)
   else:
     response_codes = utils.load_response_codes()
 
-  response_codes_roi = get_response_codes_roi(response_codes)
+  response_codes_roi = get_response_codes_roi(response_codes, page)
   save_points(response_codes_roi, "first_response_codes")
 
   cv2.rectangle(page, response_codes_roi[0], response_codes_roi[1], (0, 0, 255), 2)
