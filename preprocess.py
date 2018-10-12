@@ -1,5 +1,8 @@
 """This file deals with all the markup and preprocessing needed 
-for ingesting a new walklist"""
+for ingesting a new walklist
+
+usage: python preprocess.py -w test.pdf
+"""
 import argparse
 import copy
 import cv2
@@ -18,22 +21,26 @@ def parse_args():
   ap = argparse.ArgumentParser()
   ap.add_argument("-w", "--walklist", required=True,
     help="path to the PDF of the scanned walklist.")
+  ap.add_argument("--skip_markup", action='store_true', 
+    help="For dev purposes, if you want to skip marking up the page")
+  ap.add_argument("--single_markup", action='store_true', 
+    help="For dev purposes, if you want to mark up a single box on the page")
   return vars(ap.parse_args())
 
 
-def save_points(refPts):
+def save_points(refPts, point_name="new_point"):
   points = utils.load_ref_boxes()
 
   # Add and save new ones
-  for ctr in range(len(refPts)):
-    if "new_point" not in points:
-      points["new_point"] = {}
-    points["new_point"][ctr] = refPts[ctr]
+  for point in refPts:
+    if point_name not in points:
+      points[point_name] = []
+    points[point_name].append(point)
 
   with open(utils.REFPTS_FILENAME, "w+") as f:
     json.dump(points, f)
 
-  print (points)
+  print ("Saved to %s." % utils.REFPTS_FILENAME)
 
 
 def check_for_errors(args):
@@ -65,6 +72,7 @@ def ingest_walklist(filepath):
   for page_number in range(num_pages):
       pages[page_number].save(utils.get_page_filename(page_number), 'JPEG')
 
+  print("Done ingesting the PDF.")
   return num_pages
 
 
@@ -122,10 +130,10 @@ def markup_page(image):
 
   image = clone.copy()
   cv2.destroyAllWindows()
+
   return refPts
 
 
-# TODO: pull this out into its own pre-processing script.
 # Returns a list of ResponseCode objects.
 def markup_response_codes(image):
   response_codes = []
@@ -136,10 +144,10 @@ def markup_response_codes(image):
     print ("Please mark each response code in survey question %d." % question_number)
 
     bounding_box = markup_page(image)
-    text = run_ocr(image, bounding_box, SegmentationMode.SINGLE_WORD)
+    text = utils.run_ocr(image, bounding_box, utils.SegmentationMode.SINGLE_WORD)
      # sometimes OCR picks up stray symbols, get rid of them.
     text = ''.join(ch for ch in text if ch.isalnum())
-    response_code = ResponseCode(bounding_box, question_number, text)
+    response_code = utils.ResponseCode(bounding_box, question_number, text)
 
     print("Extracted scan code: \"%s\"" % response_code.value) 
 
@@ -150,7 +158,7 @@ def markup_response_codes(image):
         break
       else:
         print("Please enter the correct response code: ")
-        response_code.value = input().lower()
+        response_code.value = input()
     
     response_codes.append(response_code)
 
@@ -166,15 +174,30 @@ def markup_response_codes(image):
   return response_codes
 
 
-def save_response_codes(response_codes, list_id):
+def save_response_codes(response_codes):
   response_code_dict = {}
-  for response_code in response_codes:
-    if response_code.question_number not in response_code_dict:
-      response_code_dict[response_code.question_number] = []
-    response_code_dict[response_code.question_number].append(response_code.get_dict())
+  for ctr in range(len(response_codes)):
+    response_code = response_codes[ctr]
+    response_code_dict[ctr] = response_code.get_dict()
 
-  with open("%s_response_codes.json" % list_id, "w+") as f:
+  with open(utils.RESPONSE_CODES_FILENAME, "w+") as f:
     json.dump(response_code_dict, f)
+
+
+# Get the box around the all the respond codes.
+def get_response_codes_roi(response_codes):
+  x_min = 99999999  # TODO: switch out for INT_MAX
+  x_max = 0
+  y_min = 99999999
+  y_max = 0
+
+  for response_code in response_codes:
+    x_min = min(x_min, response_code.bounding_box[0][0])
+    y_min = min(y_min, response_code.bounding_box[0][1])
+    x_max = max(x_max, response_code.bounding_box[1][0])
+    y_max = max(y_max, response_code.bounding_box[1][1])
+
+  return ((x_min, y_min), (x_max, y_max))
 
 
 def main():
@@ -186,11 +209,25 @@ def main():
   ingest_walklist(args["walklist"])
 
   page_number = 1
-  page = utils.load_page(page_number)
+  if args["single_markup"]:
+    page = utils.load_page(page_number)
+    box = markup_page(page)
+    save_points(box)
 
-  list_id = utils.get_list_id(page, ref_bounding_boxes["list_id"])
-  response_codes = markup_response_codes(page)
-  save_response_codes(response_codes, list_id)
+  response_codes = []
+  if not args["skip_markup"]:
+    page = utils.load_page(page_number)
+    response_codes = markup_response_codes(page)
+    save_response_codes(response_codes)
+  else:
+    response_codes = utils.load_response_codes()
+
+  response_codes_roi = get_response_codes_roi(response_codes)
+  save_points(response_codes_roi, "first_response_codes")
+
+  cv2.rectangle(page, response_codes_roi[0], response_codes_roi[1], (0, 0, 255), 2)
+  utils.show_image(page)
+
 
 if __name__ == '__main__':
   main()

@@ -1,4 +1,4 @@
-'''usage: python scan.py -w test.pdf'''
+'''usage: python scan.py'''
 
 # import the necessary packages
 import argparse
@@ -76,6 +76,7 @@ def get_circled_responses(response_roi, answer_coordinates):
   return None
 
 
+# TODO(jeff): fill this out
 def save_responses(responses, voter_id, list_id):
   pass
   # filename = "%s.csv" % list_id

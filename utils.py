@@ -1,4 +1,5 @@
 import cv2
+import imutils
 import json
 import numpy as np
 import os
@@ -13,6 +14,7 @@ MAX_BARCODES_ON_PAGE = 8
 # pixels, as measured from the top of one line of voter info to the top of the next one
 DISTANCE_BT_VOTERS = 123  
 TEMP_DIR = 'temp/'
+RESPONSE_CODES_FILENAME = 'response_codes.json'
 REFPTS_FILENAME = 'ref_bounding_boxes.json'
 
 
@@ -25,17 +27,9 @@ def show_image(image):
 
 
 def load_ref_boxes():
-  def box_dict_to_tuples(bounding_box):
-    return [(bounding_box["0"][0], bounding_box["0"][1]), 
-      (bounding_box["1"][0], bounding_box["1"][1])]
-
   boxes = {}
   with open(REFPTS_FILENAME, "r+") as f:
-      boxes = json.load(f)
-
-  for (name, box) in boxes.items():
-    boxes[name] = box_dict_to_tuples(box)
-
+    boxes = json.load(f)
   return boxes
 
 
@@ -118,17 +112,26 @@ class ResponseCode:
     self.coords = ((bounding_box[0][0] + bounding_box[1][0]) / 2.0,
       (bounding_box[0][1] + bounding_box[1][1]) / 2.0)
     # The question it belongs to.
+    self.bounding_box = bounding_box
     self.question_number = question_number
     self.value = value
 
   # A dict representation of the ResponseCode.
   def get_dict(self):
     return { "coords": self.coords, "question_number": self.question_number, 
-      "value": self.value }
+      "value": self.value, "bounding_box": self.bounding_box }
 
 
 def load_response_codes():
-  pass
+  response_codes = []
+  with open(RESPONSE_CODES_FILENAME, "r+") as f:
+    response_codes_dict = json.load(f)
+    for (question_number, response_dict) in response_codes_dict.items():
+      response_codes.append(ResponseCode(response_dict["bounding_box"],
+                                         question_number,
+                                         response_dict["value"]))
+
+  return response_codes
 
 
 def get_page_filename(page_number):
@@ -137,10 +140,12 @@ def get_page_filename(page_number):
 
 def load_page(page_number):
   image = cv2.imread(get_page_filename(page_number), 0)
+  image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+  image = imutils.rotate_bound(image, 270)
+
   # ret, image = cv2.threshold(image, 140, 255, cv2.THRESH_BINARY_INV)
   # image = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
   #             cv2.THRESH_BINARY, 11, 2)
-  image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
   # TODO: deskew image
   # TODO: rectify image
