@@ -64,6 +64,11 @@ def check_for_errors(args):
     shutil.rmtree(utils.TEMP_DIR)
   os.mkdir(utils.TEMP_DIR)
 
+  # Make the walklist directory
+  if os.path.exists(utils.WALKLIST_DIR):
+    shutil.rmtree(utils.WALKLIST_DIR)
+  os.mkdir(utils.WALKLIST_DIR)
+
 
 # Returns the number of pages in the walklist
 def ingest_walklist(filepath):
@@ -219,16 +224,26 @@ def main():
   response_codes = []
   if not args["skip_markup"]:
     response_codes = markup_response_codes(page)
-    save_response_codes(response_codes)
   else:
     response_codes = utils.load_response_codes()
 
   response_codes_roi = get_response_codes_roi(response_codes, page)
+
+  # Normalize the response code coords
+  if not args["skip_markup"]:
+    for code in response_codes:
+      code.coords = (code.coords[0] - response_codes_roi[0][0], code.coords[1] - response_codes_roi[0][1])
+
+  save_response_codes(response_codes) 
   save_points(response_codes_roi, "first_response_codes")
+
+  response_codes_image = page[response_codes_roi[0][1]:response_codes_roi[1][1],
+                              response_codes_roi[0][0]:response_codes_roi[1][0]]
+  cv2.imwrite(utils.RESPONSE_CODES_IMAGE_PATH, response_codes_image)
+  print ("Saved out reference response codes.")
 
   cv2.rectangle(page, response_codes_roi[0], response_codes_roi[1], (0, 0, 255), 2)
   utils.show_image(page)
-
 
 if __name__ == '__main__':
   main()

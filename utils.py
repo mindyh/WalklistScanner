@@ -14,7 +14,9 @@ MAX_BARCODES_ON_PAGE = 8
 # pixels, as measured from the top of one line of voter info to the top of the next one
 DISTANCE_BT_VOTERS = 123  
 TEMP_DIR = 'temp/'
+WALKLIST_DIR = 'walklist/'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
+RESPONSE_CODES_IMAGE_PATH = TEMP_DIR + 'response_codes.png'
 REFPTS_FILENAME = 'ref_bounding_boxes.json'
 
 def add_padding(bounding_box, padding, page_size):
@@ -40,7 +42,7 @@ def load_ref_boxes():
 
 
 # Region of interest, the cropped image of the text.
-def get_roi(image, bounding_box):
+def get_bounding_box(image, bounding_box):
   # padding = 0.05
   padding = 0.0
 
@@ -82,7 +84,7 @@ class SegmentationMode(Enum):
 
 
 def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD):
-  roi = get_roi(image, bounding_box)
+  roi = get_bounding_box(image, bounding_box)
 
   # in order to apply Tesseract v4 to OCR text we must supply
   # (1) a language, (2) an OEM flag of 1, indicating that the we
@@ -112,11 +114,14 @@ def get_list_id(image, bounding_box):
 
 
 class ResponseCode:
-  def __init__(self, bounding_box, question_number, value):
+  def __init__(self, bounding_box, question_number, value, coords=None):
     # Coordinates are calculated as the center of the
     # bounding box around the scan code.
-    self.coords = ((bounding_box[0][0] + bounding_box[1][0]) / 2.0,
-      (bounding_box[0][1] + bounding_box[1][1]) / 2.0)
+    if not coords:
+      self.coords = (int((bounding_box[0][0] + bounding_box[1][0]) / 2.0),
+        int((bounding_box[0][1] + bounding_box[1][1]) / 2.0))
+    else:
+      self.coords = coords
     # The question it belongs to.
     self.bounding_box = bounding_box
     self.question_number = question_number
@@ -132,27 +137,43 @@ def load_response_codes():
   response_codes = []
   with open(RESPONSE_CODES_FILENAME, "r+") as f:
     response_codes_dict = json.load(f)
-    for (question_number, response_dict) in response_codes_dict.items():
+    for (_, response_dict) in response_codes_dict.items():
       response_codes.append(ResponseCode(response_dict["bounding_box"],
-                                         question_number,
-                                         response_dict["value"]))
+                                         response_dict["question_number"],
+                                         response_dict["value"],
+                                         response_dict["coords"]))
 
   return response_codes
 
 
 def get_page_filename(page_number):
-  return '%s/page%d.jpg' % (TEMP_DIR, page_number)
+  return '%s/page%d.jpg' % (WALKLIST_DIR, page_number)
 
+
+def get_roi(bounding_box, image):
+  return image[bounding_box[0][1]:bounding_box[1][1],
+               bounding_box[0][0]:bounding_box[1][0]] 
+
+def threshold(image, threshold=100, invert=False):
+  # Get the Otsu threshold
+  # blur = cv2.GaussianBlur(image,(5,5),0)
+  # find otsu's threshold value with OpenCV function
+  _, image = cv2.threshold(image, 0 , 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+
+  show_image(image)
+  if invert:
+    image = cv2.bitwise_not(image)  # invert the image
+  return image
 
 def load_page(page_number, rotate_dir):
-  image = cv2.imread(get_page_filename(page_number), 0)
+  image = cv2.imread(get_page_filename(page_number), cv2.IMREAD_GRAYSCALE)
 
   if rotate_dir == "CW":
     image = imutils.rotate_bound(image, 90)
   else:
     image = imutils.rotate_bound(image, 270)
   image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-  # TODO: deskew image
-  # TODO: rectify image
+
+  show_image(image)
 
   return image
