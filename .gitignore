@@ -107,5 +107,7 @@ venv.bak/
 temp/
 walklist/
 *.csv
-*.json
 *.jpg
+*.pdf
+*.json
+
