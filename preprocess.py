@@ -25,7 +25,7 @@ def parse_args():
     help="For dev purposes, if you want to skip marking up the page")
   ap.add_argument("--single_markup", action='store_true', 
     help="For dev purposes, if you want to mark up a single box on the page")
-  ap.add_argument("--rotate_dir", default='CW', 
+  ap.add_argument("--rotate_dir", default=None, 
     help="CW or CCW, rotate the page 90 degrees in that direction.")
   return vars(ap.parse_args())
 
@@ -101,6 +101,7 @@ def markup_page(image):
 
     # check to see if the left mouse button was released
     elif event == cv2.EVENT_LBUTTONUP:
+
       # record the ending (x, y) coordinates and indicate that
       # the cropping operation is finished
       refPts.append((x, y))
@@ -108,14 +109,14 @@ def markup_page(image):
    
       # TODO: update rectagle as you are drawing
       # draw a rectangle around the region of interest
-      cv2.rectangle(image, refPts[0], refPts[1], (0, 0, 255), 2)
-      cv2.imshow("markup", image)
+      cv2.rectangle(clone, refPts[0], refPts[1], (0, 0, 255), 2)
+      cv2.imshow("markup", clone)
 
   clone = image.copy()
   cv2.namedWindow("markup", cv2.WINDOW_AUTOSIZE)
   cv2.setMouseCallback("markup", click_and_drag)
 
-  cv2.putText(image, "Click and drag to draw a box. Press enter when you are done. \
+  cv2.putText(clone, "Click and drag to draw a box. Press enter when you are done. \
               Press 'r' to reset.", 
               (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
    
@@ -123,18 +124,18 @@ def markup_page(image):
   # TODO: add message telling the user to hit enter to finish
   while True:
     # display the image and wait for a keypress
-    cv2.imshow("markup", image)
-    key = cv2.waitKey(1) & 0xFF
+    cv2.imshow("markup", clone)
+    key = cv2.waitKey(0) & 0xFF
    
     # if the 'r' key is pressed, reset to the beginning
     if key == ord("r"):
-      image = clone.copy()
+      clone = image.copy()
    
     # if the enter key is pressed, break from the loop
     elif key == ord("\r"):
       break
 
-  image = clone.copy()
+  # image = clone.copy()
   cv2.destroyAllWindows()
 
   return refPts
@@ -241,9 +242,7 @@ def main():
                               response_codes_roi[0][0]:response_codes_roi[1][0]]
   cv2.imwrite(utils.RESPONSE_CODES_IMAGE_PATH, response_codes_image)
   print ("Saved out reference response codes.")
-
-  cv2.rectangle(page, response_codes_roi[0], response_codes_roi[1], (0, 0, 255), 2)
-  utils.show_image(page)
+  print ("Done, now run scan.py")
 
 if __name__ == '__main__':
   main()

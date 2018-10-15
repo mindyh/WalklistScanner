@@ -29,7 +29,7 @@ def add_padding(bounding_box, padding, page_size):
 def show_image(image):
   # show the output image
   cv2.namedWindow("Image", 0)
-  cv2.resizeWindow("Image", 50, 50)
+  # cv2.resizeWindow("Image", 50, 50)
   cv2.imshow("Image", image)
   cv2.waitKey(0)
 
@@ -170,10 +170,8 @@ def load_page(page_number, rotate_dir):
 
   if rotate_dir == "CW":
     image = imutils.rotate_bound(image, 90)
-  else:
+  elif rotate_dir == "CCW":
     image = imutils.rotate_bound(image, 270)
   image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-
-  show_image(image)
 
   return image
