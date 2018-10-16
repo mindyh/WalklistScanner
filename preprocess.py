@@ -21,7 +21,7 @@ def parse_args():
   ap = argparse.ArgumentParser()
   ap.add_argument("-w", "--walklist", required=True,
     help="path to the PDF of the scanned walklist.")
-  ap.add_argument("-c","--clean", required=True,
+  ap.add_argument("-c","--clean", default=None,
     help="path to the PDF of the clean, unmarked page to use as a reference.")
   ap.add_argument("--skip_markup", action='store_true', 
     help="For dev purposes, if you want to skip marking up the page")
@@ -55,11 +55,12 @@ def check_for_errors(args):
     sys.exit()
 
   # Check that the clean pdf passed in exists!
-  try:
-      fh = open(args["clean"], 'r')
-  except FileNotFoundError:
-    print ("Clean file not found")
-    sys.exit()
+  if args["clean"]:
+    try:
+        fh = open(args["clean"], 'r')
+    except FileNotFoundError:
+      print ("Clean file not found")
+      sys.exit()
 
   # Check that the reference file exists!
   if not (os.path.isfile(utils.REFPTS_FILENAME) and os.path.getsize(utils.REFPTS_FILENAME) > 0):
@@ -90,7 +91,10 @@ def ingest_walklist(filepath, rotate_dir, list_id, is_clean_file):
     temp_filepath = '{}/page_for_id.jpg'.format(utils.TEMP_DIR)
     pages[0].save(temp_filepath, 'JPEG')
     image = utils.load_page(None, None, rotate_dir, temp_filepath)
-    list_id = utils.get_list_id(image)
+
+    reference_image = utils.load_page(None, None, None, utils.REF_IMAGE_PATH)
+    aligned_image, h = utils.alignImages(image, reference_image)
+    list_id = utils.get_list_id(aligned_image)
 
     # Make the list id directory
     list_dir = '{}{}'.format(utils.DATA_DIR, list_id)
@@ -254,7 +258,12 @@ def main():
 
   # ingest the walklist and clean walklist
   num_pages, list_id = ingest_walklist(args["walklist"], args["rotate_dir"], None, False)
-  ingest_walklist(args["clean"], args["rotate_dir"], list_id, True)
+  if args["clean"]:
+    ingest_walklist(args["clean"], args["rotate_dir"], list_id, True)
+  else:
+    ingest_walklist(args["walklist"], args["rotate_dir"], list_id, True)
+
+  # TODO: rewrite the rest of this function with clean_page
 
   page_number = 1
   page = utils.load_page(list_id, page_number, args["rotate_dir"])

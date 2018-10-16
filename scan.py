@@ -165,7 +165,7 @@ def get_circled_responses(response_bounding_box, response_codes, page):
   ref_response_codes = cv2.cvtColor(ref_response_codes, cv2.COLOR_BGR2GRAY)
   ref_response_codes = utils.threshold(ref_response_codes)
 
-  aligned_response_codes, h = alignImages(cur_response_codes, ref_response_codes)
+  aligned_response_codes, h = utils.alignImages(cur_response_codes, ref_response_codes)
   diff = cv2.bitwise_xor(aligned_response_codes, ref_response_codes)
   utils.show_image(diff)
 
@@ -194,50 +194,7 @@ def get_circled_responses(response_bounding_box, response_codes, page):
 
   return circled_responses, has_error
 
- 
-# from https://www.learnopencv.com/image-alignment-feature-based-using-opencv-c-python/
-def alignImages(im_to_be_aligned, ref_image):
-  MAX_FEATURES = 500
-  GOOD_MATCH_PERCENT = 0.15
- 
-  # Detect ORB features and compute descriptors.
-  orb = cv2.ORB_create(MAX_FEATURES)
-  keypoints1, descriptors1 = orb.detectAndCompute(im_to_be_aligned, None)
-  keypoints2, descriptors2 = orb.detectAndCompute(ref_image, None)
-   
-  # Match features.
-  matcher = cv2.DescriptorMatcher_create(cv2.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
-  matches = matcher.match(descriptors1, descriptors2, None)
-   
-  # Sort matches by score
-  matches.sort(key=lambda x: x.distance, reverse=False)
- 
-  # Remove not so good matches
-  numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
-  matches = matches[:numGoodMatches]
- 
-  # Draw top matches
-  if utils.__DEBUG__:
-    imMatches = cv2.drawMatches(im_to_be_aligned, keypoints1, ref_image, keypoints2, matches, None)
-    cv2.imwrite("matches.jpg", imMatches)
-   
-  # Extract location of good matches
-  points1 = np.zeros((len(matches), 2), dtype=np.float32)
-  points2 = np.zeros((len(matches), 2), dtype=np.float32)
- 
-  for i, match in enumerate(matches):
-    points1[i, :] = keypoints1[match.queryIdx].pt
-    points2[i, :] = keypoints2[match.trainIdx].pt
-   
-  # Find homography
-  h, mask = cv2.findHomography(points1, points2, cv2.RANSAC)
- 
-  # Use homography
-  height, width = ref_image.shape
-  aligned_image = cv2.warpPerspective(im_to_be_aligned, h, (width, height))
-   
-  return aligned_image, h
- 
+
 
 def error_check_responses(responses):
   return False

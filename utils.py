@@ -16,6 +16,7 @@ DISTANCE_BT_VOTERS = 123
 TEMP_DIR = 'temp/'
 DATA_DIR = 'data/'
 WALKLIST_DIR = 'walklist/'
+REF_IMAGE_PATH = DATA_DIR + 'reference.jpg'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
 RESPONSE_CODES_IMAGE_PATH = TEMP_DIR + 'response_codes.png'
 REFPTS_FILENAME = 'ref_bounding_boxes.json'
@@ -43,7 +44,7 @@ def load_ref_boxes():
 
 
 # Region of interest, the cropped image of the text.
-def get_bounding_box(image, bounding_box):
+def get_roi(image, bounding_box):
   # padding = 0.05
   padding = 0.0
 
@@ -85,7 +86,8 @@ class SegmentationMode(Enum):
 
 
 def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD):
-  roi = get_bounding_box(image, bounding_box)
+  roi = get_roi(image, bounding_box)
+  show_image(roi)
 
   # in order to apply Tesseract v4 to OCR text we must supply
   # (1) a language, (2) an OEM flag of 1, indicating that the we
@@ -102,6 +104,8 @@ def get_list_id(image):
 
   # get bounding box coordinates
   ref_bounding_boxes = load_ref_boxes()
+
+  print(ref_bounding_boxes['list_id'])
 
   text = run_ocr(image, ref_bounding_boxes['list_id'])
   
@@ -158,10 +162,6 @@ def get_page_filename(list_id, page_number):
   return '%s%s/%spage%d.jpg' % (DATA_DIR, list_id, WALKLIST_DIR, page_number)
 
 
-def get_roi(bounding_box, image):
-  return image[bounding_box[0][1]:bounding_box[1][1],
-               bounding_box[0][0]:bounding_box[1][0]] 
-
 def threshold(image, threshold=100, invert=False):
   # Get the Otsu threshold
   # blur = cv2.GaussianBlur(image,(5,5),0)
@@ -186,3 +186,47 @@ def load_page(list_id, page_number, rotate_dir, image_filepath=None):
   image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
   return image
+
+
+  # from https://www.learnopencv.com/image-alignment-feature-based-using-opencv-c-python/
+def alignImages(im_to_be_aligned, ref_image):
+  MAX_FEATURES = 500
+  GOOD_MATCH_PERCENT = 0.15
+ 
+  # Detect ORB features and compute descriptors.
+  orb = cv2.ORB_create(MAX_FEATURES)
+  keypoints1, descriptors1 = orb.detectAndCompute(im_to_be_aligned, None)
+  keypoints2, descriptors2 = orb.detectAndCompute(ref_image, None)
+   
+  # Match features.
+  matcher = cv2.DescriptorMatcher_create(cv2.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
+  matches = matcher.match(descriptors1, descriptors2, None)
+   
+  # Sort matches by score
+  matches.sort(key=lambda x: x.distance, reverse=False)
+ 
+  # Remove not so good matches
+  numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
+  matches = matches[:numGoodMatches]
+ 
+  # Draw top matches
+  if __DEBUG__:
+    imMatches = cv2.drawMatches(im_to_be_aligned, keypoints1, ref_image, keypoints2, matches, None)
+    cv2.imwrite("{}matches.jpg".format(TEMP_DIR), imMatches)
+   
+  # Extract location of good matches
+  points1 = np.zeros((len(matches), 2), dtype=np.float32)
+  points2 = np.zeros((len(matches), 2), dtype=np.float32)
+ 
+  for i, match in enumerate(matches):
+    points1[i, :] = keypoints1[match.queryIdx].pt
+    points2[i, :] = keypoints2[match.trainIdx].pt
+   
+  # Find homography
+  h, mask = cv2.findHomography(points1, points2, cv2.RANSAC)
+ 
+  # Use homography
+  height, width = ref_image.shape[:2]
+  aligned_image = cv2.warpPerspective(im_to_be_aligned, h, (width, height))
+   
+  return aligned_image, h
