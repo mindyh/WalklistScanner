@@ -7,13 +7,14 @@ import shutil
 import sys
 import pytesseract
 from enum import Enum
-
+import re
 
 __DEBUG__ = True
 MAX_BARCODES_ON_PAGE = 8
 # pixels, as measured from the top of one line of voter info to the top of the next one
 DISTANCE_BT_VOTERS = 123  
 TEMP_DIR = 'temp/'
+DATA_DIR = 'data/'
 WALKLIST_DIR = 'walklist/'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
 RESPONSE_CODES_IMAGE_PATH = TEMP_DIR + 'response_codes.png'
@@ -97,8 +98,12 @@ def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD)
   return text
 
 
-def get_list_id(image, bounding_box):
-  text = run_ocr(image, bounding_box)
+def get_list_id(image):
+
+  # get bounding box coordinates
+  ref_bounding_boxes = load_ref_boxes()
+
+  text = run_ocr(image, ref_bounding_boxes['list_id'])
   
   if "List ID:" not in text:
     print("get_list_id: could not read the list ID.")
@@ -106,9 +111,12 @@ def get_list_id(image, bounding_box):
 
   list_id = text.split(': ')[1]
 
+  # strip out any non-numeric characters
+  list_id = re.sub("[^0-9]", "", list_id)
+
   if __DEBUG__:
     print ("OCR: ", text)
-    print ("List ID: ", list_id)
+    print ("List ID: '{}'".format(list_id))
 
   return list_id
 
@@ -146,8 +154,8 @@ def load_response_codes():
   return response_codes
 
 
-def get_page_filename(page_number):
-  return '%s/page%d.jpg' % (WALKLIST_DIR, page_number)
+def get_page_filename(list_id, page_number):
+  return '%s%s/%spage%d.jpg' % (DATA_DIR, list_id, WALKLIST_DIR, page_number)
 
 
 def get_roi(bounding_box, image):
@@ -165,8 +173,11 @@ def threshold(image, threshold=100, invert=False):
     image = cv2.bitwise_not(image)  # invert the image
   return image
 
-def load_page(page_number, rotate_dir):
-  image = cv2.imread(get_page_filename(page_number), cv2.IMREAD_GRAYSCALE)
+def load_page(list_id, page_number, rotate_dir, image_filepath=None):
+  if not image_filepath:
+    image_filepath = get_page_filename(list_id, page_number)
+
+  image = cv2.imread(image_filepath, cv2.IMREAD_GRAYSCALE)
 
   if rotate_dir == "CW":
     image = imutils.rotate_bound(image, 90)

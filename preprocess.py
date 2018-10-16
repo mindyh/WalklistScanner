@@ -21,6 +21,8 @@ def parse_args():
   ap = argparse.ArgumentParser()
   ap.add_argument("-w", "--walklist", required=True,
     help="path to the PDF of the scanned walklist.")
+  ap.add_argument("-c","--clean", required=True,
+    help="path to the PDF of the clean, unmarked page to use as a reference.")
   ap.add_argument("--skip_markup", action='store_true', 
     help="For dev purposes, if you want to skip marking up the page")
   ap.add_argument("--single_markup", action='store_true', 
@@ -45,11 +47,18 @@ def save_points(refPts, point_name="new_point"):
 
 
 def check_for_errors(args):
-  # Check that the pdf passed in exists!
+  # Check that the walklist pdf passed in exists!
   try:
       fh = open(args["walklist"], 'r')
   except FileNotFoundError:
-    print ("Image not found")
+    print ("Walklist file not found")
+    sys.exit()
+
+  # Check that the clean pdf passed in exists!
+  try:
+      fh = open(args["clean"], 'r')
+  except FileNotFoundError:
+    print ("Clean file not found")
     sys.exit()
 
   # Check that the reference file exists!
@@ -64,22 +73,52 @@ def check_for_errors(args):
     shutil.rmtree(utils.TEMP_DIR)
   os.mkdir(utils.TEMP_DIR)
 
-  # Make the walklist directory
-  if os.path.exists(utils.WALKLIST_DIR):
-    shutil.rmtree(utils.WALKLIST_DIR)
-  os.mkdir(utils.WALKLIST_DIR)
+  # Make the data directory
+  if not os.path.exists(utils.DATA_DIR):
+    os.mkdir(utils.DATA_DIR)
 
 
 # Returns the number of pages in the walklist
-def ingest_walklist(filepath):
-  # TODO: load as pdf, convert to png
-  pages = convert_from_path(filepath, 300)  # 300 dpi, optimal for tesseract
-  num_pages = len(pages)
-  for page_number in range(num_pages):
-      pages[page_number].save(utils.get_page_filename(page_number), 'JPEG')
+def ingest_walklist(filepath, rotate_dir, list_id, is_clean_file):
 
-  print("Done ingesting the PDF.")
-  return num_pages
+  # convert PDF pages to images
+  pages = convert_from_path(filepath, 300)  # 300 dpi, optimal for tesseract
+
+  # If list_id isn't passed in, get list ID from the first page
+  if not list_id:
+    # save page to temp, load with opencv
+    temp_filepath = '{}/page_for_id.jpg'.format(utils.TEMP_DIR)
+    pages[0].save(temp_filepath, 'JPEG')
+    image = utils.load_page(None, None, rotate_dir, temp_filepath)
+    list_id = utils.get_list_id(image)
+
+    # Make the list id directory
+    list_dir = '{}{}'.format(utils.DATA_DIR, list_id)
+    if os.path.exists(list_dir):
+      shutil.rmtree(list_dir)
+    os.mkdir(list_dir)
+
+    # Make the walklist directory
+    walklist_dir = '{}/{}'.format(list_dir, utils.WALKLIST_DIR)
+    if os.path.exists(walklist_dir):
+      shutil.rmtree(walklist_dir)
+    os.mkdir(walklist_dir)
+
+  # if this is the clean file, only save the first page
+  if is_clean_file:
+    num_pages = 1
+    clean_filepath = '{}{}/clean_page.jpg'.format(utils.DATA_DIR, list_id)
+    pages[0].save(clean_filepath, 'JPEG')
+
+    print("Done ingesting the clean PDF.")
+
+  else:
+    num_pages = len(pages)
+    for page_number in range(num_pages):
+        pages[page_number].save(utils.get_page_filename(list_id, page_number), 'JPEG')
+
+    print("Done ingesting the walklist PDF.")
+  return num_pages, list_id
 
 
 refPts = []
@@ -213,11 +252,12 @@ def main():
   check_for_errors(args)
   ref_bounding_boxes = utils.load_ref_boxes()
 
-  # load the input image
-  ingest_walklist(args["walklist"])
+  # ingest the walklist and clean walklist
+  num_pages, list_id = ingest_walklist(args["walklist"], args["rotate_dir"], None, False)
+  ingest_walklist(args["clean"], args["rotate_dir"], list_id, True)
 
   page_number = 1
-  page = utils.load_page(page_number, args["rotate_dir"])
+  page = utils.load_page(list_id, page_number, args["rotate_dir"])
   if args["single_markup"]:
     box = markup_page(page)
     save_points(box)
