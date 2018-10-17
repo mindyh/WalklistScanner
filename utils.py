@@ -17,6 +17,7 @@ TEMP_DIR = 'temp/'
 DATA_DIR = 'data/'
 WALKLIST_DIR = 'walklist/'
 REF_IMAGE_PATH = DATA_DIR + 'reference.jpg'
+CLEAN_IMAGE_FILENAME = 'clean_page.jpg'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
 RESPONSE_CODES_IMAGE_PATH = TEMP_DIR + 'response_codes.png'
 REFPTS_FILENAME = 'ref_bounding_boxes.json'
@@ -87,7 +88,6 @@ class SegmentationMode(Enum):
 
 def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD):
   roi = get_roi(image, bounding_box)
-  show_image(roi)
 
   # in order to apply Tesseract v4 to OCR text we must supply
   # (1) a language, (2) an OEM flag of 1, indicating that the we
@@ -100,12 +100,23 @@ def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD)
   return text
 
 
+def get_list_id_from_page(page, rotate_dir):
+  temp_filepath = '{}/page_for_id.jpg'.format(TEMP_DIR)
+  page.save(temp_filepath, 'JPEG')
+  image = load_page(None, None, rotate_dir, temp_filepath)
+
+  reference_image = load_page(None, None, None, REF_IMAGE_PATH)
+  aligned_image, h = alignImages(image, reference_image)
+  list_id = get_list_id(aligned_image)
+
+  return list_id
+
+
+
 def get_list_id(image):
 
   # get bounding box coordinates
   ref_bounding_boxes = load_ref_boxes()
-
-  print(ref_bounding_boxes['list_id'])
 
   text = run_ocr(image, ref_bounding_boxes['list_id'])
   
@@ -145,9 +156,10 @@ class ResponseCode:
       "value": self.value, "bounding_box": self.bounding_box }
 
 
-def load_response_codes():
+def load_response_codes(list_id):
   response_codes = []
-  with open(RESPONSE_CODES_FILENAME, "r+") as f:
+  response_codes_filepath = "{}{}/{}".format(DATA_DIR, list_id, RESPONSE_CODES_FILENAME)
+  with open(response_codes_filepath, "r+") as f:
     response_codes_dict = json.load(f)
     for (_, response_dict) in response_codes_dict.items():
       response_codes.append(ResponseCode(response_dict["bounding_box"],
@@ -160,6 +172,12 @@ def load_response_codes():
 
 def get_page_filename(list_id, page_number):
   return '%s%s/%spage%d.jpg' % (DATA_DIR, list_id, WALKLIST_DIR, page_number)
+
+
+def get_aligned_page(page):
+  reference_image = load_page(None, None, None, REF_IMAGE_PATH)
+  page, h = alignImages(page, reference_image)
+  return page
 
 
 def threshold(image, threshold=100, invert=False):

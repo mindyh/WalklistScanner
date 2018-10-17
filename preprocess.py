@@ -87,20 +87,12 @@ def ingest_walklist(filepath, rotate_dir, list_id, is_clean_file):
 
   # If list_id isn't passed in, get list ID from the first page
   if not list_id:
-    # save page to temp, load with opencv
-    temp_filepath = '{}/page_for_id.jpg'.format(utils.TEMP_DIR)
-    pages[0].save(temp_filepath, 'JPEG')
-    image = utils.load_page(None, None, rotate_dir, temp_filepath)
-
-    reference_image = utils.load_page(None, None, None, utils.REF_IMAGE_PATH)
-    aligned_image, h = utils.alignImages(image, reference_image)
-    list_id = utils.get_list_id(aligned_image)
+    list_id = utils.get_list_id_from_page(pages[0], rotate_dir)
 
     # Make the list id directory
     list_dir = '{}{}'.format(utils.DATA_DIR, list_id)
-    if os.path.exists(list_dir):
-      shutil.rmtree(list_dir)
-    os.mkdir(list_dir)
+    if not os.path.exists(list_dir):
+      os.mkdir(list_dir)
 
     # Make the walklist directory
     walklist_dir = '{}/{}'.format(list_dir, utils.WALKLIST_DIR)
@@ -111,7 +103,7 @@ def ingest_walklist(filepath, rotate_dir, list_id, is_clean_file):
   # if this is the clean file, only save the first page
   if is_clean_file:
     num_pages = 1
-    clean_filepath = '{}{}/clean_page.jpg'.format(utils.DATA_DIR, list_id)
+    clean_filepath = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.CLEAN_IMAGE_FILENAME)
     pages[0].save(clean_filepath, 'JPEG')
 
     print("Done ingesting the clean PDF.")
@@ -224,13 +216,13 @@ def markup_response_codes(image):
   return response_codes
 
 
-def save_response_codes(response_codes):
+def save_response_codes(list_id,response_codes):
   response_code_dict = {}
   for ctr in range(len(response_codes)):
     response_code = response_codes[ctr]
     response_code_dict[ctr] = response_code.get_dict()
 
-  with open(utils.RESPONSE_CODES_FILENAME, "w+") as f:
+  with open('{}{}/{}'.format(utils.DATA_DIR, list_id, utils.RESPONSE_CODES_FILENAME), "w+") as f:
     json.dump(response_code_dict, f)
 
 
@@ -260,34 +252,37 @@ def main():
   num_pages, list_id = ingest_walklist(args["walklist"], args["rotate_dir"], None, False)
   if args["clean"]:
     ingest_walklist(args["clean"], args["rotate_dir"], list_id, True)
+    page_to_markup = utils.load_page(None, None, args["rotate_dir"], '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.CLEAN_IMAGE_FILENAME))
   else:
     ingest_walklist(args["walklist"], args["rotate_dir"], list_id, True)
+    page_number = 1
+    page_to_markup = utils.load_page(list_id, page_number, args["rotate_dir"])
 
-  # TODO: rewrite the rest of this function with clean_page
+  # align page to markup
+  aligned_page_to_markup = utils.get_aligned_page(page_to_markup)
 
-  page_number = 1
-  page = utils.load_page(list_id, page_number, args["rotate_dir"])
+
   if args["single_markup"]:
-    box = markup_page(page)
+    box = markup_page(aligned_page_to_markup)
     save_points(box)
 
   response_codes = []
   if not args["skip_markup"]:
-    response_codes = markup_response_codes(page)
+    response_codes = markup_response_codes(aligned_page_to_markup)
   else:
     response_codes = utils.load_response_codes()
 
-  response_codes_roi = get_response_codes_roi(response_codes, page)
+  response_codes_roi = get_response_codes_roi(response_codes, aligned_page_to_markup)
 
   # Normalize the response code coords
   if not args["skip_markup"]:
     for code in response_codes:
       code.coords = (code.coords[0] - response_codes_roi[0][0], code.coords[1] - response_codes_roi[0][1])
 
-  save_response_codes(response_codes) 
-  save_points(response_codes_roi, "first_response_codes")
+  save_response_codes(list_id, response_codes)
+  # save_points(response_codes_roi, "first_response_codes")
 
-  response_codes_image = page[response_codes_roi[0][1]:response_codes_roi[1][1],
+  response_codes_image = aligned_page_to_markup[response_codes_roi[0][1]:response_codes_roi[1][1],
                               response_codes_roi[0][0]:response_codes_roi[1][0]]
   cv2.imwrite(utils.RESPONSE_CODES_IMAGE_PATH, response_codes_image)
   print ("Saved out reference response codes.")
