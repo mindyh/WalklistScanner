@@ -1,0 +1,290 @@
+{
+    "0": {
+        "coords": [
+            151,
+            39
+        ],
+        "question_number": 1,
+        "value": "Y",
+        "bounding_box": [
+            [
+                1992,
+                616
+            ],
+            [
+                2032,
+                655
+            ]
+        ]
+    },
+    "1": {
+        "coords": [
+            188,
+            39
+        ],
+        "question_number": 1,
+        "value": "U",
+        "bounding_box": [
+            [
+                2030,
+                616
+            ],
+            [
+                2068,
+                654
+            ]
+        ]
+    },
+    "2": {
+        "coords": [
+            223,
+            39
+        ],
+        "question_number": 1,
+        "value": "N",
+        "bounding_box": [
+            [
+                2065,
+                617
+            ],
+            [
+                2104,
+                654
+            ]
+        ]
+    },
+    "3": {
+        "coords": [
+            262,
+            41
+        ],
+        "question_number": 1,
+        "value": "R",
+        "bounding_box": [
+            [
+                2106,
+                617
+            ],
+            [
+                2141,
+                657
+            ]
+        ]
+    },
+    "4": {
+        "coords": [
+            132,
+            76
+        ],
+        "question_number": 2,
+        "value": "Y",
+        "bounding_box": [
+            [
+                1975,
+                654
+            ],
+            [
+                2012,
+                691
+            ]
+        ]
+    },
+    "5": {
+        "coords": [
+            170,
+            77
+        ],
+        "question_number": 2,
+        "value": "U",
+        "bounding_box": [
+            [
+                2013,
+                655
+            ],
+            [
+                2050,
+                692
+            ]
+        ]
+    },
+    "6": {
+        "coords": [
+            208,
+            77
+        ],
+        "question_number": 2,
+        "value": "N",
+        "bounding_box": [
+            [
+                2051,
+                654
+            ],
+            [
+                2088,
+                692
+            ]
+        ]
+    },
+    "7": {
+        "coords": [
+            246,
+            79
+        ],
+        "question_number": 2,
+        "value": "R",
+        "bounding_box": [
+            [
+                2088,
+                656
+            ],
+            [
+                2127,
+                694
+            ]
+        ]
+    },
+    "9": {
+        "coords": [
+            143,
+            115
+        ],
+        "question_number": 3,
+        "value": "MAT",
+        "bounding_box": [
+            [
+                1958,
+                692
+            ],
+            [
+                2050,
+                730
+            ]
+        ]
+    },
+    "10": {
+        "coords": [
+            222,
+            115
+        ],
+        "question_number": 3,
+        "value": "NH",
+        "bounding_box": [
+            [
+                2052,
+                692
+            ],
+            [
+                2114,
+                730
+            ]
+        ]
+    },
+    "11": {
+        "coords": [
+            300,
+            116
+        ],
+        "question_number": 3,
+        "value": "GTD",
+        "bounding_box": [
+            [
+                2119,
+                692
+            ],
+            [
+                2204,
+                733
+            ]
+        ]
+    },
+    "12": {
+        "coords": [
+            380,
+            118
+        ],
+        "question_number": 3,
+        "value": "MV",
+        "bounding_box": [
+            [
+                2207,
+                693
+            ],
+            [
+                2275,
+                736
+            ]
+        ]
+    },
+    "13": {
+        "coords": [
+            442,
+            115
+        ],
+        "question_number": 3,
+        "value": "SP",
+        "bounding_box": [
+            [
+                2277,
+                689
+            ],
+            [
+                2330,
+                733
+            ]
+        ]
+    },
+    "14": {
+        "coords": [
+            50,
+            152
+        ],
+        "question_number": 3,
+        "value": "VT",
+        "bounding_box": [
+            [
+                1881,
+                729
+            ],
+            [
+                1942,
+                768
+            ]
+        ]
+    },
+    "15": {
+        "coords": [
+            111,
+            152
+        ],
+        "question_number": 3,
+        "value": "LG",
+        "bounding_box": [
+            [
+                1941,
+                730
+            ],
+            [
+                2004,
+                767
+            ]
+        ]
+    },
+    "16": {
+        "coords": [
+            186,
+            152
+        ],
+        "question_number": 3,
+        "value": "DNC",
+        "bounding_box": [
+            [
+                2001,
+                730
+            ],
+            [
+                2094,
+                767
+            ]
+        ]
+    }
+}
