@@ -25,6 +25,8 @@ def parse_args():
     help="ID of the list to scan")
   ap.add_argument("--rotate_dir", default=None, 
     help="CW or CCW, rotate the page 90 degrees")
+  ap.add_argument("--start_page", type=int, default=0, 
+    help="The page number to start from.")
   return vars(ap.parse_args())
 
 
@@ -102,7 +104,7 @@ def get_voter_id(image, bounding_box):
 
 
 def get_response_for_barcode(barcode_coords, first_response_coords):
-  padding = 10 # meant this for the next function, but seems to work better!
+  padding = 0 # meant this for the next function, but seems to work better!
   response_h = first_response_coords[1][1] - first_response_coords[0][1]
   return ((first_response_coords[0][0] - padding, barcode_coords[0][1] - padding),
           (first_response_coords[1][0] + padding, barcode_coords[0][1] + response_h + padding))
@@ -162,7 +164,7 @@ def get_circle_centers(diff):
 # Find all contour centers that are close enough to a response code to be considered
 # "selected"
 def centers_to_responses(centers, response_codes, aligned_response_codes):
-  DISTANCE_THRESH = 30
+  DISTANCE_THRESH = 35
   SPLIT_DIST_THRESH = 5
 
   aligned_response_codes = cv2.cvtColor(aligned_response_codes, cv2.COLOR_GRAY2BGR)
@@ -187,7 +189,6 @@ def centers_to_responses(centers, response_codes, aligned_response_codes):
     # The case of only appending the closest point.
     if (closest_code and not second_code) or \
        (closest_code and second_code and (second_dist - closest_dist > SPLIT_DIST_THRESH)):
-      print (closest_dist)
       selected_responses.append(closest_code)
     # The split is too close to call, add both closest responses.
     elif (closest_code and second_code and (second_dist - closest_dist <= SPLIT_DIST_THRESH)): 
@@ -199,17 +200,18 @@ def centers_to_responses(centers, response_codes, aligned_response_codes):
 
 
 # Returns a list of circled response codes.
-def get_circled_responses(response_bounding_box, response_codes, page):
+def get_circled_responses(response_bounding_box, response_codes, page, ref_response_codes):
   # carve out the roi
   cur_response_codes = utils.get_roi(page, list(response_bounding_box))
   cur_response_codes = cv2.cvtColor(cur_response_codes, cv2.COLOR_BGR2GRAY)
   cur_response_codes = utils.threshold(cur_response_codes)
+  utils.show_image(cur_response_codes)
 
-  ref_response_codes = cv2.imread(utils.RESPONSE_CODES_IMAGE_PATH)
   ref_response_codes = cv2.cvtColor(ref_response_codes, cv2.COLOR_BGR2GRAY)
   ref_response_codes = utils.threshold(ref_response_codes)
+  utils.show_image(ref_response_codes)
 
-  aligned_response_codes, h = utils.alignImages(cur_response_codes, ref_response_codes)
+  aligned_response_codes, _ = utils.alignImages(cur_response_codes, ref_response_codes)
   diff = cv2.bitwise_xor(aligned_response_codes, ref_response_codes)
 
   # crop pixels to account for the alignment algo introducing whitespace
@@ -334,53 +336,62 @@ def save_error_pages(error_pages, list_id):
 def main():
   args = parse_args()
   check_files_exist(args['list_id'])
+  list_dir = utils.get_list_dir(args["list_id"])
 
-  ref_bounding_boxes = utils.load_ref_boxes()
+  ref_bounding_boxes = utils.load_ref_boxes(args["list_id"])
+  ref_page = utils.load_page(list_dir + utils.CLEAN_IMAGE_FILENAME)
 
-  list_dir = "{}{}".format(utils.DATA_DIR, args['list_id'])
+  # Prep the output file
+  outfile = open("{}/results_{}.csv".format(list_dir, args['list_id']), mode='w+')
+  dict_writer = csv.DictWriter(outfile, fieldnames=["voter_id", "question_1", "question_2", "question_3", "question_4"])
+  dict_writer.writeheader()
 
   unreadable_responses_for_human = []
   skipped_pages = []
-
-  # TODO: allow passing in page to start from 
-  outfile = open("{}/results_{}.csv".format(list_dir, args['list_id']), mode='w+')
-  dict_writer = csv.DictWriter(outfile, fieldnames=["voter_id", "question_1", "question_2", "question_3"])
-  dict_writer.writeheader()
-
   num_pages = len(os.listdir("{}/{}".format(list_dir, utils.WALKLIST_DIR)))
-  for page_number in range(num_pages):
-    page = utils.load_page(args['list_id'], page_number, args["rotate_dir"])
+  for page_number in range(args['start_page'], num_pages):
+    page = utils.load_page(utils.get_page_filename(args['list_id'], page_number), args["rotate_dir"])
     response_codes = utils.load_response_codes(args['list_id'])
 
     # align page
     raw_page = page.copy()
-    page = utils.get_aligned_page(page)
-    # utils.show_image(page)
+    page, transform = utils.alignImages(page, ref_page)
+    utils.show_image(page)
 
     # confirm page has the correct list_id
-    page_list_id = utils.get_list_id(page)
+    page_list_id = utils.get_list_id_from_page(page, ref_bounding_boxes["list_id"])
     if page_list_id != args['list_id']:
       print('Error: Page {} has ID {}, but active ID is {}. Page {} has been skipped.'.format(page_number, page_list_id, args['list_id'], page_number))
       skipped_pages.append(raw_page)
       continue
 
     # find the barcodes in the image and decode each of the barcodes
+    # Barcode scanner needs the unthresholded image.
     barcodes = pyzbar.decode(page)
+    if len(barcodes) == 0:
+      print('Error: Cannot find barcodes. Page {} has been skipped.'.format(page_number))
+      skipped_pages.append(raw_page)
+      continue
 
     # loop over the detected barcodes
     for barcode in barcodes:
       (barcode_coords, voter_id) = extract_barcode_info(barcode, page)
 
+      if utils.__DEBUG__:
+        cv2.rectangle(page, barcode_coords[0], barcode_coords[1], (255, 0, 255), 3)
+        utils.show_image(page)
+
       # Get the corresponding response codes region
       response_bounding_box = get_response_for_barcode(barcode_coords, 
-                                ref_bounding_boxes["first_response_codes"])
+                                ref_bounding_boxes["response_codes"])
 
       # Figure out which ones are circled
-      circled_responses, has_error = get_circled_responses(response_bounding_box, response_codes, page)
+      ref_response_codes = utils.load_page(list_dir + utils.RESPONSE_CODES_IMAGE_FILENAME)
+      circled_responses, has_error = get_circled_responses(response_bounding_box, response_codes, page, ref_response_codes)
       has_error = has_error or error_check_responses(circled_responses)
 
       if has_error:
-        error_image = create_error_image(page, barcode_coords, ref_bounding_boxes["first_response_codes"])
+        error_image = create_error_image(page, barcode_coords, ref_bounding_boxes["response_codes"])
         unreadable_responses_for_human.append(error_image)
       else:
         save_responses(circled_responses, voter_id, dict_writer)

@@ -17,10 +17,9 @@ TEMP_DIR = 'temp/'
 DATA_DIR = 'data/'
 WALKLIST_DIR = 'walklist/'
 ERROR_PAGES_DIR = 'error_pages/'
-REF_IMAGE_PATH = DATA_DIR + 'reference.jpg'
 CLEAN_IMAGE_FILENAME = 'clean_page.jpg'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
-RESPONSE_CODES_IMAGE_PATH = TEMP_DIR + 'response_codes.png'
+RESPONSE_CODES_IMAGE_FILENAME = 'response_codes.jpg'
 REFPTS_FILENAME = 'ref_bounding_boxes.json'
 
 def add_padding(bounding_box, padding, page_size):
@@ -33,23 +32,36 @@ def add_padding(bounding_box, padding, page_size):
 def show_image(image):
   # show the output image
   cv2.namedWindow("Image", 0)
-  # cv2.resizeWindow("Image", 50, 50)
+  cv2.resizeWindow("Image", 100, 100)
   cv2.imshow("Image", image)
   cv2.waitKey(0)
 
 
-def load_ref_boxes():
+def is_non_zero_file(fpath):  
+    return os.path.isfile(fpath) and os.path.getsize(fpath) > 0
+
+
+def load_ref_boxes(list_id):
   boxes = {}
-  with open(REFPTS_FILENAME, "r+") as f:
-    boxes = json.load(f)
+  filepath = '{}{}/{}'.format(DATA_DIR, list_id, REFPTS_FILENAME)
+
+  if is_non_zero_file(filepath):
+    with open(filepath, "r+") as f:
+      boxes = json.load(f)
+
   return boxes
 
 
-# Region of interest, the cropped image of the text.
-def get_roi(image, bounding_box):
-  # padding = 0.05
-  padding = 0.0
+def save_ref_boxes(list_id, dict_to_add):
+  filepath = '{}{}/{}'.format(DATA_DIR, list_id, REFPTS_FILENAME)
+  boxes = load_ref_boxes(list_id)
+  with open(filepath, "w+") as f:
+    boxes.update(dict_to_add)
+    json.dump(boxes, f)
 
+
+# Region of interest, the cropped image of the text.
+def get_roi(image, bounding_box, padding=0.0):
   # dummy until I figure out what this is
   rW = 1
   rH = 1
@@ -87,8 +99,9 @@ class SegmentationMode(Enum):
   BLOCK_OF_TEXT = 6
 
 
-def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD):
-  roi = get_roi(image, bounding_box)
+def run_ocr(image, bounding_box=None, segmentation_mode=SegmentationMode.SINGLE_WORD):
+  if bounding_box:
+    image = get_roi(image, bounding_box)
 
   # in order to apply Tesseract v4 to OCR text we must supply
   # (1) a language, (2) an OEM flag of 1, indicating that the we
@@ -97,42 +110,89 @@ def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD)
   # treating the ROI as a single block of text
   # config = ("-c tessedit_char_whitelist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' -l eng --oem 0 --psm 6")
   config = ("-l eng --oem 1 --psm %d" % segmentation_mode.value)
-  text = pytesseract.image_to_string(roi, config=config)
+  text = pytesseract.image_to_string(image, config=config)
   return text
 
 
-def get_list_id_from_page(page, rotate_dir):
-  temp_filepath = '{}/page_for_id.jpg'.format(TEMP_DIR)
-  page.save(temp_filepath, 'JPEG')
-  image = load_page(None, None, rotate_dir, temp_filepath)
-
-  reference_image = load_page(None, None, None, REF_IMAGE_PATH)
-  aligned_image, h = alignImages(image, reference_image)
-  list_id = get_list_id(aligned_image)
-
+def get_list_id_from_page(page, bounding_box):
+  list_id = get_list_id(get_roi(page, bounding_box))
   return list_id
 
 
 def get_list_id(image):
-  # get bounding box coordinates
-  ref_bounding_boxes = load_ref_boxes()
-
-  text = run_ocr(image, ref_bounding_boxes['list_id'])
+  text = run_ocr(image)
   
-  if "List ID:" not in text:
-    print("get_list_id: could not read the list ID.")
-    return None
-
   list_id = text.split(': ')[1]
-
   # strip out any non-numeric characters
   list_id = re.sub("[^0-9]", "", list_id)
+
+  # Error check on the list_id.
+  print (list_id)
+  if len(list_id) != 6:
+    print("get_list_id: could not read the list ID.")
+    return None
 
   if __DEBUG__:
     print ("OCR: ", text)
     print ("List ID: '{}'".format(list_id))
 
   return list_id
+
+
+refPts = []
+is_cropping = False
+def markup_page(image):
+  def click_and_drag(event, x, y, flags, param):
+    # grab references to the global variables
+    global refPts, is_cropping
+   
+    # if the left mouse button was clicked, record the starting
+    # (x, y) coordinates and indicate that cropping is being
+    # performed
+    if event == cv2.EVENT_LBUTTONDOWN:
+      refPts = [(x, y)]
+      cropping = True
+
+    # check to see if the left mouse button was released
+    elif event == cv2.EVENT_LBUTTONUP:
+
+      # record the ending (x, y) coordinates and indicate that
+      # the cropping operation is finished
+      refPts.append((x, y))
+      cropping = False
+   
+      # TODO: update rectagle as you are drawing
+      # draw a rectangle around the region of interest
+      cv2.rectangle(clone, refPts[0], refPts[1], (0, 0, 255), 2)
+      cv2.imshow("markup", clone)
+
+  clone = image.copy()
+  cv2.namedWindow("markup", cv2.WINDOW_AUTOSIZE)
+  cv2.setMouseCallback("markup", click_and_drag)
+
+  cv2.putText(clone, "Click and drag to draw a box. Press enter when you are done. \
+              Press 'r' to reset.", 
+              (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+   
+  # keep looping until the enter key is pressed
+  # TODO: add message telling the user to hit enter to finish
+  while True:
+    # display the image and wait for a keypress
+    cv2.imshow("markup", clone)
+    key = cv2.waitKey(0) & 0xFF
+   
+    # if the 'r' key is pressed, reset to the beginning
+    if key == ord("r"):
+      clone = image.copy()
+   
+    # if the enter key is pressed, break from the loop
+    elif key == ord("\r"):
+      break
+
+  # image = clone.copy()
+  cv2.destroyAllWindows()
+
+  return refPts
 
 
 class ResponseCode:
@@ -173,10 +233,8 @@ def get_page_filename(list_id, page_number):
   return '%s%s/%spage%d.jpg' % (DATA_DIR, list_id, WALKLIST_DIR, page_number)
 
 
-def get_aligned_page(page):
-  reference_image = load_page(None, None, None, REF_IMAGE_PATH)
-  page, h = alignImages(page, reference_image)
-  return page
+def get_list_dir(list_id):
+  return "{}{}/".format(DATA_DIR, list_id)
 
 
 def threshold(image, threshold=100, invert=False):
@@ -184,16 +242,11 @@ def threshold(image, threshold=100, invert=False):
   # blur = cv2.GaussianBlur(image,(5,5),0)
   # find otsu's threshold value with OpenCV function
   _, image = cv2.threshold(image, 0 , 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
-
-  show_image(image)
   if invert:
     image = cv2.bitwise_not(image)  # invert the image
   return image
 
-def load_page(list_id, page_number, rotate_dir, image_filepath=None):
-  if not image_filepath:
-    image_filepath = get_page_filename(list_id, page_number)
-
+def load_page(image_filepath, rotate_dir=None):
   image = cv2.imread(image_filepath, cv2.IMREAD_GRAYSCALE)
 
   if rotate_dir == "CW":
@@ -228,7 +281,7 @@ def alignImages(im_to_be_aligned, ref_image):
   # Draw top matches
   if __DEBUG__:
     imMatches = cv2.drawMatches(im_to_be_aligned, keypoints1, ref_image, keypoints2, matches, None)
-    cv2.imwrite("{}matches.jpg".format(TEMP_DIR), imMatches)
+    cv2.imwrite("matches.jpg", imMatches)
    
   # Extract location of good matches
   points1 = np.zeros((len(matches), 2), dtype=np.float32)
@@ -237,12 +290,19 @@ def alignImages(im_to_be_aligned, ref_image):
   for i, match in enumerate(matches):
     points1[i, :] = keypoints1[match.queryIdx].pt
     points2[i, :] = keypoints2[match.trainIdx].pt
+
+
+  height, width = ref_image.shape[:2]
+  # transform = cv2.estimateRigidTransform(points1, points2, False)
+  # aligned_image = cv2.warpAffine(im_to_be_aligned, transform, (width, height),
+  #    borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
    
   # Find homography
-  h, mask = cv2.findHomography(points1, points2, cv2.RANSAC)
+  transform, mask = cv2.findHomography(points1, points2, cv2.RANSAC)
  
   # Use homography
-  height, width = ref_image.shape[:2]
-  aligned_image = cv2.warpPerspective(im_to_be_aligned, h, (width, height))
+  aligned_image = cv2.warpPerspective(im_to_be_aligned, transform, (width, height), 
+                                      borderMode=cv2.BORDER_CONSTANT,
+                                      borderValue=(255, 255, 255))
    
-  return aligned_image, h
+  return aligned_image, transform

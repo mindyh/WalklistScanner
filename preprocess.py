@@ -21,29 +21,15 @@ def parse_args():
   ap = argparse.ArgumentParser()
   ap.add_argument("-w", "--walklist", required=True,
     help="path to the PDF of the scanned walklist.")
-  ap.add_argument("-c","--clean", default=None,
+  ap.add_argument("-c","--clean", required=True,
     help="path to the PDF of the clean, unmarked page to use as a reference.")
+  ap.add_argument("-n","--clean_page_number", type=int, default=0,
+    help="The page number of the clean page to markup as part of the ingestion.")
   ap.add_argument("--skip_markup", action='store_true', 
     help="For dev purposes, if you want to skip marking up the page")
-  ap.add_argument("--single_markup", action='store_true', 
-    help="For dev purposes, if you want to mark up a single box on the page")
   ap.add_argument("--rotate_dir", default=None, 
     help="CW or CCW, rotate the page 90 degrees in that direction.")
   return vars(ap.parse_args())
-
-
-def save_points(refPts, point_name="new_point"):
-  points = utils.load_ref_boxes()
-
-  # Add and save new ones
-  points[point_name] = []
-  for point in refPts:
-    points[point_name].append(point)
-
-  with open(utils.REFPTS_FILENAME, "w+") as f:
-    json.dump(points, f)
-
-  print ("Saved to %s." % utils.REFPTS_FILENAME)
 
 
 def check_for_errors(args):
@@ -62,11 +48,6 @@ def check_for_errors(args):
       print ("Clean file not found")
       sys.exit()
 
-  # Check that the reference file exists!
-  if not (os.path.isfile(utils.REFPTS_FILENAME) and os.path.getsize(utils.REFPTS_FILENAME) > 0):
-    print ("Reference points not found")
-    sys.exit()
-
   # TODO: check that the walklist passed in is a PDF
 
   # Make the temporary directory
@@ -79,103 +60,6 @@ def check_for_errors(args):
     os.mkdir(utils.DATA_DIR)
 
 
-# Returns the number of pages in the walklist
-def ingest_walklist(filepath, rotate_dir, list_id, is_clean_file):
-
-  # convert PDF pages to images
-  pages = convert_from_path(filepath, 300)  # 300 dpi, optimal for tesseract
-
-  # If list_id isn't passed in, get list ID from the first page
-  if not list_id:
-    list_id = utils.get_list_id_from_page(pages[0], rotate_dir)
-
-    # Make the list id directory
-    list_dir = '{}{}'.format(utils.DATA_DIR, list_id)
-    if not os.path.exists(list_dir):
-      os.mkdir(list_dir)
-
-    # Make the walklist directory
-    walklist_dir = '{}/{}'.format(list_dir, utils.WALKLIST_DIR)
-    if os.path.exists(walklist_dir):
-      shutil.rmtree(walklist_dir)
-    os.mkdir(walklist_dir)
-
-  # if this is the clean file, only save the first page
-  if is_clean_file:
-    num_pages = 1
-    clean_filepath = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.CLEAN_IMAGE_FILENAME)
-    pages[0].save(clean_filepath, 'JPEG')
-
-    print("Done ingesting the clean PDF.")
-
-  else:
-    num_pages = len(pages)
-    for page_number in range(num_pages):
-        pages[page_number].save(utils.get_page_filename(list_id, page_number), 'JPEG')
-
-    print("Done ingesting the walklist PDF.")
-  return num_pages, list_id
-
-
-refPts = []
-is_cropping = False
-
-"""The user draws a rectangle around the response codes, returns each
-response code and the global coordinates of it w.r.t. the original image."""
-def markup_page(image):
-  def click_and_drag(event, x, y, flags, param):
-    # grab references to the global variables
-    global refPts, is_cropping
-   
-    # if the left mouse button was clicked, record the starting
-    # (x, y) coordinates and indicate that cropping is being
-    # performed
-    if event == cv2.EVENT_LBUTTONDOWN:
-      refPts = [(x, y)]
-      cropping = True
-
-    # check to see if the left mouse button was released
-    elif event == cv2.EVENT_LBUTTONUP:
-
-      # record the ending (x, y) coordinates and indicate that
-      # the cropping operation is finished
-      refPts.append((x, y))
-      cropping = False
-   
-      # TODO: update rectagle as you are drawing
-      # draw a rectangle around the region of interest
-      cv2.rectangle(clone, refPts[0], refPts[1], (0, 0, 255), 2)
-      cv2.imshow("markup", clone)
-
-  clone = image.copy()
-  cv2.namedWindow("markup", cv2.WINDOW_AUTOSIZE)
-  cv2.setMouseCallback("markup", click_and_drag)
-
-  cv2.putText(clone, "Click and drag to draw a box. Press enter when you are done. \
-              Press 'r' to reset.", 
-              (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-   
-  # keep looping until the enter key is pressed
-  # TODO: add message telling the user to hit enter to finish
-  while True:
-    # display the image and wait for a keypress
-    cv2.imshow("markup", clone)
-    key = cv2.waitKey(0) & 0xFF
-   
-    # if the 'r' key is pressed, reset to the beginning
-    if key == ord("r"):
-      clone = image.copy()
-   
-    # if the enter key is pressed, break from the loop
-    elif key == ord("\r"):
-      break
-
-  # image = clone.copy()
-  cv2.destroyAllWindows()
-
-  return refPts
-
-
 # Returns a list of ResponseCode objects.
 def markup_response_codes(image):
   response_codes = []
@@ -185,7 +69,7 @@ def markup_response_codes(image):
   while True:
     print ("Please mark each response code in survey question %d." % question_number)
 
-    bounding_box = markup_page(image)
+    bounding_box = utils.markup_page(image)
     text = utils.run_ocr(image, bounding_box, utils.SegmentationMode.SINGLE_WORD)
      # sometimes OCR picks up stray symbols, get rid of them.
     text = ''.join(ch for ch in text if ch.isalnum())
@@ -216,7 +100,8 @@ def markup_response_codes(image):
   return response_codes
 
 
-def save_response_codes(list_id,response_codes):
+def save_response_codes(list_id, response_codes):
+  # Save out the ResponseCodes objects to dict.
   response_code_dict = {}
   for ctr in range(len(response_codes)):
     response_code = response_codes[ctr]
@@ -227,7 +112,7 @@ def save_response_codes(list_id,response_codes):
 
 
 # Get the box around the all the respond codes.
-def get_response_codes_roi(response_codes, page):
+def get_response_codes_bounding_box(response_codes, page):
   x_min = 99999999  # TODO: switch out for INT_MAX
   x_max = 0
   y_min = 99999999
@@ -243,48 +128,85 @@ def get_response_codes_roi(response_codes, page):
                            page.shape[:2])
 
 
+# Returns the number of pages in the walklist
+DPI = 300   # 300 dpi, optimal for tesseract
+def ingest_walklist(list_id, filepath, rotate_dir):
+  # convert PDF pages to images
+  pages = convert_from_path(filepath, DPI)  
+  num_pages = len(pages)
+  for page_number in range(num_pages):
+      pages[page_number].save(utils.get_page_filename(list_id, page_number), 'JPEG')
+
+  print("Done ingesting the walklist PDF.")
+  return num_pages
+
+
+# Markup a clean page to get the list_id
+def ingest_clean_page(filepath, page_number, rotate_dir):
+  pages = convert_from_path(filepath, DPI) 
+  temp_path = "%s%s" % (utils.TEMP_DIR, utils.CLEAN_IMAGE_FILENAME)
+  pages[page_number].save(temp_path, 'JPEG')  # Save first page out to temp so we can read it in again
+  page_to_markup = utils.load_page(temp_path, rotate_dir)
+  
+  print ("Please markup the List Id on the page.")
+  bounding_box = utils.markup_page(page_to_markup)
+  list_id = utils.get_list_id(utils.get_roi(page_to_markup, bounding_box))
+
+  # Make the list id directory
+  list_dir = '{}{}'.format(utils.DATA_DIR, list_id)
+  if not os.path.exists(list_dir):
+    print("Making the directory %s" % list_dir)
+    os.mkdir(list_dir)
+
+  # Make the walklist directory
+  walklist_dir = '{}/{}'.format(list_dir, utils.WALKLIST_DIR)
+  if os.path.exists(walklist_dir):
+    shutil.rmtree(walklist_dir)
+  os.mkdir(walklist_dir)
+  print("Making the directory %s" % walklist_dir)
+
+  # Save the bounding box out.
+  utils.save_ref_boxes(list_id, {"list_id": bounding_box})
+
+  # Save the file out to the correct directory.
+  clean_filepath = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.CLEAN_IMAGE_FILENAME)
+  print("Saving image to %s" % clean_filepath)
+  cv2.imwrite(clean_filepath, page_to_markup)
+
+  print("Done ingesting the clean PDF.")  
+  return list_id, page_to_markup
+
+
 def main():
   args = parse_args()
   check_for_errors(args)
-  ref_bounding_boxes = utils.load_ref_boxes()
 
-  # ingest the walklist and clean walklist
-  num_pages, list_id = ingest_walklist(args["walklist"], args["rotate_dir"], None, False)
-  if args["clean"]:
-    ingest_walklist(args["clean"], args["rotate_dir"], list_id, True)
-    page_to_markup = utils.load_page(None, None, args["rotate_dir"], '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.CLEAN_IMAGE_FILENAME))
-  else:
-    ingest_walklist(args["walklist"], args["rotate_dir"], list_id, True)
-    page_number = 1
-    page_to_markup = utils.load_page(list_id, page_number, args["rotate_dir"])
-
-  # align page to markup
-  aligned_page_to_markup = utils.get_aligned_page(page_to_markup)
-
-
-  if args["single_markup"]:
-    box = markup_page(aligned_page_to_markup)
-    save_points(box)
+  list_id, clean_page = ingest_clean_page(args["clean"], args["clean_page_number"], args["rotate_dir"])  
+  num_pages = ingest_walklist(list_id, args["walklist"], args["rotate_dir"])
 
   response_codes = []
   if not args["skip_markup"]:
-    response_codes = markup_response_codes(aligned_page_to_markup)
+    response_codes = markup_response_codes(clean_page)
   else:
-    response_codes = utils.load_response_codes()
+    response_codes = utils.load_response_codes(list_id)
 
-  response_codes_roi = get_response_codes_roi(response_codes, aligned_page_to_markup)
+  bounding_box = get_response_codes_bounding_box(response_codes, clean_page)
 
   # Normalize the response code coords
   if not args["skip_markup"]:
     for code in response_codes:
-      code.coords = (code.coords[0] - response_codes_roi[0][0], code.coords[1] - response_codes_roi[0][1])
+      code.coords = (code.coords[0] - bounding_box[0][0], code.coords[1] - bounding_box[0][1])
 
+  # Save out the ResponseCodes themselves.
   save_response_codes(list_id, response_codes)
-  # save_points(response_codes_roi, "first_response_codes")
 
-  response_codes_image = aligned_page_to_markup[response_codes_roi[0][1]:response_codes_roi[1][1],
-                              response_codes_roi[0][0]:response_codes_roi[1][0]]
-  cv2.imwrite(utils.RESPONSE_CODES_IMAGE_PATH, response_codes_image)
+  # Save out the response code image.
+  rc_image_path = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.RESPONSE_CODES_IMAGE_FILENAME)
+  cv2.imwrite(rc_image_path, utils.get_roi(clean_page, bounding_box))
+
+  # Save out the response code bounding box.
+  utils.save_ref_boxes(list_id, {"response_codes": bounding_box})
+
   print ("Saved out reference response codes.")
   print ("Done, now run scan.py")
 
