@@ -113,9 +113,7 @@ def get_list_id_from_page(page, rotate_dir):
   return list_id
 
 
-
 def get_list_id(image):
-
   # get bounding box coordinates
   ref_bounding_boxes = load_ref_boxes()
 
@@ -203,11 +201,10 @@ def load_page(list_id, page_number, rotate_dir, image_filepath=None):
   elif rotate_dir == "CCW":
     image = imutils.rotate_bound(image, 270)
   image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-
   return image
 
 
-  # from https://www.learnopencv.com/image-alignment-feature-based-using-opencv-c-python/
+# from https://www.learnopencv.com/image-alignment-feature-based-using-opencv-c-python/
 def alignImages(im_to_be_aligned, ref_image):
   MAX_FEATURES = 500
   GOOD_MATCH_PERCENT = 0.15

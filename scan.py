@@ -200,7 +200,6 @@ def centers_to_responses(centers, response_codes, aligned_response_codes):
 
 # Returns a list of circled response codes.
 def get_circled_responses(response_bounding_box, response_codes, page):
-
   # carve out the roi
   cur_response_codes = utils.get_roi(page, list(response_bounding_box))
   cur_response_codes = cv2.cvtColor(cur_response_codes, cv2.COLOR_BGR2GRAY)
@@ -212,11 +211,9 @@ def get_circled_responses(response_bounding_box, response_codes, page):
 
   aligned_response_codes, h = utils.alignImages(cur_response_codes, ref_response_codes)
   diff = cv2.bitwise_xor(aligned_response_codes, ref_response_codes)
-  # utils.show_image(diff)
 
   # crop pixels to account for the alignment algo introducing whitespace
   diff = diff[20:, 0:-10]
-  # utils.show_image(diff)
 
   diff = cv2.medianBlur(diff, 5)
   diff = utils.threshold(diff)
@@ -226,8 +223,8 @@ def get_circled_responses(response_bounding_box, response_codes, page):
   diff = cv2.medianBlur(diff, 5)
   diff = cv2.medianBlur(diff, 5)
   
-  # if utils.__DEBUG__:
-    # utils.show_image(diff)
+  if utils.__DEBUG__:
+    utils.show_image(diff)
 
   contour_centers, has_error = get_circle_centers(diff)
 
@@ -240,7 +237,6 @@ def get_circled_responses(response_bounding_box, response_codes, page):
   return circled_responses, has_error
 
 
-
 def error_check_responses(responses):
   print('responses:')
   print(responses)
@@ -251,8 +247,6 @@ def create_error_image(page, barcode_coords, first_response_coords):
   full_response_bounding_box = get_response_including_barcode(barcode_coords, first_response_coords)
   error_image = utils.get_roi(page, list(full_response_bounding_box))
   return(error_image)
-  
-
 
 
 def save_responses(responses, voter_id, dict_writer):
@@ -268,7 +262,6 @@ def save_responses(responses, voter_id, dict_writer):
 
 
 def generate_error_pages(error_images, skipped_pages, list_id):
-
   # set page dimensions
   width_inches = 11
   height_inches = 8.5
@@ -319,7 +312,6 @@ def generate_error_pages(error_images, skipped_pages, list_id):
 
 
 def save_error_pages(error_pages, list_id):
-
   # create error dir
   error_dir_path = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.ERROR_PAGES_DIR)
   if not os.path.exists(error_dir_path):
@@ -370,29 +362,28 @@ def main():
     if page_list_id != args['list_id']:
       print('Error: Page {} has ID {}, but active ID is {}. Page {} has been skipped.'.format(page_number, page_list_id, args['list_id'], page_number))
       skipped_pages.append(raw_page)
+      continue
 
-    else:
+    # find the barcodes in the image and decode each of the barcodes
+    barcodes = pyzbar.decode(page)
 
-      # find the barcodes in the image and decode each of the barcodes
-      barcodes = pyzbar.decode(page)
+    # loop over the detected barcodes
+    for barcode in barcodes:
+      (barcode_coords, voter_id) = extract_barcode_info(barcode, page)
 
-      # loop over the detected barcodes
-      for barcode in barcodes:
-        (barcode_coords, voter_id) = extract_barcode_info(barcode, page)
+      # Get the corresponding response codes region
+      response_bounding_box = get_response_for_barcode(barcode_coords, 
+                                ref_bounding_boxes["first_response_codes"])
 
-        # Get the corresponding response codes region
-        response_bounding_box = get_response_for_barcode(barcode_coords, 
-                                  ref_bounding_boxes["first_response_codes"])
+      # Figure out which ones are circled
+      circled_responses, has_error = get_circled_responses(response_bounding_box, response_codes, page)
+      has_error = has_error or error_check_responses(circled_responses)
 
-        # Figure out which ones are circled
-        circled_responses, has_error = get_circled_responses(response_bounding_box, response_codes, page)
-        has_error = has_error or error_check_responses(circled_responses)
-
-        if has_error:
-          error_image = create_error_image(page, barcode_coords, ref_bounding_boxes["first_response_codes"])
-          unreadable_responses_for_human.append(error_image)
-        else:
-          save_responses(circled_responses, voter_id, dict_writer)
+      if has_error:
+        error_image = create_error_image(page, barcode_coords, ref_bounding_boxes["first_response_codes"])
+        unreadable_responses_for_human.append(error_image)
+      else:
+        save_responses(circled_responses, voter_id, dict_writer)
 
     utils.show_image(page)
   outfile.close()
