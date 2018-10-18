@@ -7,14 +7,18 @@ import shutil
 import sys
 import pytesseract
 from enum import Enum
-
+import re
 
 __DEBUG__ = True
 MAX_BARCODES_ON_PAGE = 8
 # pixels, as measured from the top of one line of voter info to the top of the next one
 DISTANCE_BT_VOTERS = 123  
 TEMP_DIR = 'temp/'
+DATA_DIR = 'data/'
 WALKLIST_DIR = 'walklist/'
+ERROR_PAGES_DIR = 'error_pages/'
+REF_IMAGE_PATH = DATA_DIR + 'reference.jpg'
+CLEAN_IMAGE_FILENAME = 'clean_page.jpg'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
 RESPONSE_CODES_IMAGE_PATH = TEMP_DIR + 'response_codes.png'
 REFPTS_FILENAME = 'ref_bounding_boxes.json'
@@ -29,7 +33,7 @@ def add_padding(bounding_box, padding, page_size):
 def show_image(image):
   # show the output image
   cv2.namedWindow("Image", 0)
-  cv2.resizeWindow("Image", 50, 50)
+  # cv2.resizeWindow("Image", 50, 50)
   cv2.imshow("Image", image)
   cv2.waitKey(0)
 
@@ -42,7 +46,7 @@ def load_ref_boxes():
 
 
 # Region of interest, the cropped image of the text.
-def get_bounding_box(image, bounding_box):
+def get_roi(image, bounding_box):
   # padding = 0.05
   padding = 0.0
 
@@ -84,7 +88,7 @@ class SegmentationMode(Enum):
 
 
 def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD):
-  roi = get_bounding_box(image, bounding_box)
+  roi = get_roi(image, bounding_box)
 
   # in order to apply Tesseract v4 to OCR text we must supply
   # (1) a language, (2) an OEM flag of 1, indicating that the we
@@ -97,8 +101,25 @@ def run_ocr(image, bounding_box, segmentation_mode=SegmentationMode.SINGLE_WORD)
   return text
 
 
-def get_list_id(image, bounding_box):
-  text = run_ocr(image, bounding_box)
+def get_list_id_from_page(page, rotate_dir):
+  temp_filepath = '{}/page_for_id.jpg'.format(TEMP_DIR)
+  page.save(temp_filepath, 'JPEG')
+  image = load_page(None, None, rotate_dir, temp_filepath)
+
+  reference_image = load_page(None, None, None, REF_IMAGE_PATH)
+  aligned_image, h = alignImages(image, reference_image)
+  list_id = get_list_id(aligned_image)
+
+  return list_id
+
+
+
+def get_list_id(image):
+
+  # get bounding box coordinates
+  ref_bounding_boxes = load_ref_boxes()
+
+  text = run_ocr(image, ref_bounding_boxes['list_id'])
   
   if "List ID:" not in text:
     print("get_list_id: could not read the list ID.")
@@ -106,9 +127,12 @@ def get_list_id(image, bounding_box):
 
   list_id = text.split(': ')[1]
 
+  # strip out any non-numeric characters
+  list_id = re.sub("[^0-9]", "", list_id)
+
   if __DEBUG__:
     print ("OCR: ", text)
-    print ("List ID: ", list_id)
+    print ("List ID: '{}'".format(list_id))
 
   return list_id
 
@@ -133,9 +157,10 @@ class ResponseCode:
       "value": self.value, "bounding_box": self.bounding_box }
 
 
-def load_response_codes():
+def load_response_codes(list_id):
   response_codes = []
-  with open(RESPONSE_CODES_FILENAME, "r+") as f:
+  response_codes_filepath = "{}{}/{}".format(DATA_DIR, list_id, RESPONSE_CODES_FILENAME)
+  with open(response_codes_filepath, "r+") as f:
     response_codes_dict = json.load(f)
     for (_, response_dict) in response_codes_dict.items():
       response_codes.append(ResponseCode(response_dict["bounding_box"],
@@ -146,13 +171,15 @@ def load_response_codes():
   return response_codes
 
 
-def get_page_filename(page_number):
-  return '%s/page%d.jpg' % (WALKLIST_DIR, page_number)
+def get_page_filename(list_id, page_number):
+  return '%s%s/%spage%d.jpg' % (DATA_DIR, list_id, WALKLIST_DIR, page_number)
 
 
-def get_roi(bounding_box, image):
-  return image[bounding_box[0][1]:bounding_box[1][1],
-               bounding_box[0][0]:bounding_box[1][0]] 
+def get_aligned_page(page):
+  reference_image = load_page(None, None, None, REF_IMAGE_PATH)
+  page, h = alignImages(page, reference_image)
+  return page
+
 
 def threshold(image, threshold=100, invert=False):
   # Get the Otsu threshold
@@ -165,15 +192,60 @@ def threshold(image, threshold=100, invert=False):
     image = cv2.bitwise_not(image)  # invert the image
   return image
 
-def load_page(page_number, rotate_dir):
-  image = cv2.imread(get_page_filename(page_number), cv2.IMREAD_GRAYSCALE)
+def load_page(list_id, page_number, rotate_dir, image_filepath=None):
+  if not image_filepath:
+    image_filepath = get_page_filename(list_id, page_number)
+
+  image = cv2.imread(image_filepath, cv2.IMREAD_GRAYSCALE)
 
   if rotate_dir == "CW":
     image = imutils.rotate_bound(image, 90)
-  else:
+  elif rotate_dir == "CCW":
     image = imutils.rotate_bound(image, 270)
   image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
-  show_image(image)
-
   return image
+
+
+  # from https://www.learnopencv.com/image-alignment-feature-based-using-opencv-c-python/
+def alignImages(im_to_be_aligned, ref_image):
+  MAX_FEATURES = 500
+  GOOD_MATCH_PERCENT = 0.15
+ 
+  # Detect ORB features and compute descriptors.
+  orb = cv2.ORB_create(MAX_FEATURES)
+  keypoints1, descriptors1 = orb.detectAndCompute(im_to_be_aligned, None)
+  keypoints2, descriptors2 = orb.detectAndCompute(ref_image, None)
+   
+  # Match features.
+  matcher = cv2.DescriptorMatcher_create(cv2.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
+  matches = matcher.match(descriptors1, descriptors2, None)
+   
+  # Sort matches by score
+  matches.sort(key=lambda x: x.distance, reverse=False)
+ 
+  # Remove not so good matches
+  numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
+  matches = matches[:numGoodMatches]
+ 
+  # Draw top matches
+  if __DEBUG__:
+    imMatches = cv2.drawMatches(im_to_be_aligned, keypoints1, ref_image, keypoints2, matches, None)
+    cv2.imwrite("{}matches.jpg".format(TEMP_DIR), imMatches)
+   
+  # Extract location of good matches
+  points1 = np.zeros((len(matches), 2), dtype=np.float32)
+  points2 = np.zeros((len(matches), 2), dtype=np.float32)
+ 
+  for i, match in enumerate(matches):
+    points1[i, :] = keypoints1[match.queryIdx].pt
+    points2[i, :] = keypoints2[match.trainIdx].pt
+   
+  # Find homography
+  h, mask = cv2.findHomography(points1, points2, cv2.RANSAC)
+ 
+  # Use homography
+  height, width = ref_image.shape[:2]
+  aligned_image = cv2.warpPerspective(im_to_be_aligned, h, (width, height))
+   
+  return aligned_image, h
