@@ -16,6 +16,7 @@ DISTANCE_BT_VOTERS = 123
 TEMP_DIR = 'temp/'
 DATA_DIR = 'data/'
 WALKLIST_DIR = 'walklist/'
+ERROR_PAGES_DIR = 'error_pages/'
 REF_IMAGE_PATH = DATA_DIR + 'reference.jpg'
 CLEAN_IMAGE_FILENAME = 'clean_page.jpg'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
