@@ -25,8 +25,13 @@ def parse_args():
     help="ID of the list to scan")
   ap.add_argument("--rotate_dir", default=None, 
     help="CW or CCW, rotate the page 90 degrees")
+<<<<<<< HEAD
   ap.add_argument("--start_page", type=int, default=0, 
     help="The page number to start from.")
+=======
+  ap.add_argument("--manual_review", action='store_true', 
+    help="Prompt the user to approve/reject each scan")
+>>>>>>> added manual review
   return vars(ap.parse_args())
 
 
@@ -195,7 +200,8 @@ def centers_to_responses(centers, response_codes, aligned_response_codes):
       selected_responses.append(closest_code)
       selected_responses.append(second_code)
 
-  utils.show_image(aligned_response_codes)
+  if utils.__DEBUG__:
+    utils.show_image(aligned_response_codes)
   return selected_responses
 
 
@@ -213,9 +219,19 @@ def get_circled_responses(response_bounding_box, response_codes, page, ref_respo
 
   aligned_response_codes, _ = utils.alignImages(cur_response_codes, ref_response_codes)
   diff = cv2.bitwise_xor(aligned_response_codes, ref_response_codes)
+<<<<<<< HEAD
 
   # crop pixels to account for the alignment algo introducing whitespace
   diff = diff[20:, 0:-10]
+=======
+  if utils.__DEBUG__:
+    utils.show_image(diff)
+
+  # crop pixels to account for the alignment algo introducing whitespace
+  diff = diff[20:, 0:-10]
+  if utils.__DEBUG__:
+    utils.show_image(diff)
+>>>>>>> added manual review
 
   diff = cv2.medianBlur(diff, 5)
   diff = utils.threshold(diff)
@@ -239,9 +255,60 @@ def get_circled_responses(response_bounding_box, response_codes, page, ref_respo
   return circled_responses, has_error
 
 
+def get_user_to_review_responses(response_bounding_box, page, circled_responses, voter_id):
+  user_verdict = None
+
+  top_margin = 50
+
+  # init response_image
+  responses_image = utils.get_roi(page, list(response_bounding_box))
+  responses_image = cv2.copyMakeBorder(responses_image, top_margin,0,0,0, cv2.BORDER_CONSTANT, value=(0,0,0))
+
+  # get list of responses
+  response_pairs = []
+  if circled_responses:
+    for resp in circled_responses:
+      response_pairs.append('Q{}: {}'.format(resp.question_number, resp.value))
+
+      # add dots in the center of each highlighted response code
+      cv2.circle(responses_image, (resp.coords[0], resp.coords[1]+top_margin), 6, (0,0,255),-1)
+
+    # convert to a string
+    response_pairs = ",".join(response_pairs)
+  else:
+    response_pairs = 'None'
+  
+  # annotate the response image
+  cv2.namedWindow("review", cv2.WINDOW_AUTOSIZE)
+  cv2.putText(responses_image, "Responses: {}. Is this correct? (y|n)".format(response_pairs), (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+  # keep looping until the y or n key is pressed
+  while True:
+    # display the image and wait for a keypress
+    cv2.imshow("review", responses_image)
+
+    key = cv2.waitKey(0) & 0xFF
+   
+    # if the 'y' key is pressed, user approves
+    if key == ord("y"):
+      user_verdict = True
+      print('{}: Correct scan!'.format(voter_id))
+      break
+   
+    # if the 'n' key is pressed, user rejects
+    elif key == ord("n"):
+      user_verdict = False
+      print('{}: Incorrect scan :('.format(voter_id))
+      break
+
+  # close window  
+  cv2.destroyAllWindows()
+
+  return user_verdict
+
+
+# TODO: complete this function once have multi-response checking
 def error_check_responses(responses):
-  print('responses:')
-  print(responses)
   return False
 
 
@@ -288,7 +355,7 @@ def generate_error_pages(error_images, skipped_pages, list_id):
     if i % num_images_per_page == 0:
 
       # save the previous page to the error_pages array
-      if page:
+      if i > 0:
         error_pages.append(page)
 
       # generate a new page and reset the images on page counter
@@ -348,6 +415,9 @@ def main():
 
   unreadable_responses_for_human = []
   skipped_pages = []
+  incorrect_scans = []
+  num_scanned_barcodes = 0
+  num_error_barcodes = 0
   num_pages = len(os.listdir("{}/{}".format(list_dir, utils.WALKLIST_DIR)))
   for page_number in range(args['start_page'], num_pages):
     page = utils.load_page(utils.get_page_filename(args['list_id'], page_number), args["rotate_dir"])
@@ -356,7 +426,8 @@ def main():
     # align page
     raw_page = page.copy()
     page, transform = utils.alignImages(page, ref_page)
-    utils.show_image(page)
+    if utils.__DEBUG__:
+      utils.show_image(page)
 
     # confirm page has the correct list_id
     page_list_id = utils.get_list_id_from_page(page, ref_bounding_boxes["list_id"])
@@ -377,6 +448,9 @@ def main():
     for barcode in barcodes:
       (barcode_coords, voter_id) = extract_barcode_info(barcode, page)
 
+      # increment barcodes counter
+      num_scanned_barcodes += 1
+
       if utils.__DEBUG__:
         cv2.rectangle(page, barcode_coords[0], barcode_coords[1], (255, 0, 255), 3)
         utils.show_image(page)
@@ -390,17 +464,39 @@ def main():
       circled_responses, has_error = get_circled_responses(response_bounding_box, response_codes, page, ref_response_codes)
       has_error = has_error or error_check_responses(circled_responses)
 
+      # if has an error at this point, add to the error tally
+      if has_error:
+        num_error_barcodes += 1
+
+      # Do manual review if flagged and no errors
+      if args["manual_review"] and not has_error:
+        has_error = get_user_to_review_responses(response_bounding_box, page, circled_responses, voter_id)
+
+        # if user verdict is false, add the voter_id to the list of incorrect scans
+        if has_error:
+          incorrect_scans.append(voter_id)
+
       if has_error:
         error_image = create_error_image(page, barcode_coords, ref_bounding_boxes["response_codes"])
         unreadable_responses_for_human.append(error_image)
       else:
         save_responses(circled_responses, voter_id, dict_writer)
 
-    utils.show_image(page)
+    if utils.__DEBUG__:
+      utils.show_image(page)
   outfile.close()
 
   generate_error_pages(unreadable_responses_for_human, skipped_pages, args['list_id'])
 
+  # print statistics
+  print('======== STATISTICS ========')
+  print('Scanned {} barcodes.'.format(num_scanned_barcodes))
+  print('{} ({}%) had system-detected errors.'.format(num_error_barcodes, round((num_error_barcodes/num_scanned_barcodes)*100)))
+  if args['manual_review']:
+    num_no_system_errors = num_scanned_barcodes - num_error_barcodes
+    error_rate = len(incorrect_scans) / num_no_system_errors
+    accuracy_rate = round((1-error_rate)*100)
+    print('{} of {} were incorrectly scanned. {}% accuracy rate.'.format(len(incorrect_scans), num_no_system_errors, accuracy_rate))
 
 if __name__ == '__main__':
   main()
