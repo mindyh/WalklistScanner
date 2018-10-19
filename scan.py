@@ -25,13 +25,10 @@ def parse_args():
     help="ID of the list to scan")
   ap.add_argument("--rotate_dir", default=None, 
     help="CW or CCW, rotate the page 90 degrees")
-<<<<<<< HEAD
   ap.add_argument("--start_page", type=int, default=0, 
     help="The page number to start from.")
-=======
   ap.add_argument("--manual_review", action='store_true', 
     help="Prompt the user to approve/reject each scan")
->>>>>>> added manual review
   return vars(ap.parse_args())
 
 
@@ -211,28 +208,15 @@ def get_circled_responses(response_bounding_box, response_codes, page, ref_respo
   cur_response_codes = utils.get_roi(page, list(response_bounding_box))
   cur_response_codes = cv2.cvtColor(cur_response_codes, cv2.COLOR_BGR2GRAY)
   cur_response_codes = utils.threshold(cur_response_codes)
-  utils.show_image(cur_response_codes)
 
   ref_response_codes = cv2.cvtColor(ref_response_codes, cv2.COLOR_BGR2GRAY)
   ref_response_codes = utils.threshold(ref_response_codes)
-  utils.show_image(ref_response_codes)
 
   aligned_response_codes, _ = utils.alignImages(cur_response_codes, ref_response_codes)
   diff = cv2.bitwise_xor(aligned_response_codes, ref_response_codes)
-<<<<<<< HEAD
 
   # crop pixels to account for the alignment algo introducing whitespace
   diff = diff[20:, 0:-10]
-=======
-  if utils.__DEBUG__:
-    utils.show_image(diff)
-
-  # crop pixels to account for the alignment algo introducing whitespace
-  diff = diff[20:, 0:-10]
-  if utils.__DEBUG__:
-    utils.show_image(diff)
->>>>>>> added manual review
-
   diff = cv2.medianBlur(diff, 5)
   diff = utils.threshold(diff)
   
@@ -255,7 +239,7 @@ def get_circled_responses(response_bounding_box, response_codes, page, ref_respo
   return circled_responses, has_error
 
 
-def get_user_to_review_responses(response_bounding_box, page, circled_responses, voter_id):
+def manual_review(response_bounding_box, page, circled_responses, voter_id):
   user_verdict = None
 
   top_margin = 50
@@ -470,7 +454,7 @@ def main():
 
       # Do manual review if flagged and no errors
       if args["manual_review"] and not has_error:
-        has_error = get_user_to_review_responses(response_bounding_box, page, circled_responses, voter_id)
+        has_error = manual_review(response_bounding_box, page, circled_responses, voter_id)
 
         # if user verdict is false, add the voter_id to the list of incorrect scans
         if has_error:
