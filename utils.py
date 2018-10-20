@@ -9,7 +9,7 @@ import pytesseract
 from enum import Enum
 import re
 
-__DEBUG__ = True
+__DEBUG__ = False
 MAX_BARCODES_ON_PAGE = 8
 # pixels, as measured from the top of one line of voter info to the top of the next one
 DISTANCE_BT_VOTERS = 123  
@@ -242,6 +242,9 @@ def threshold(image, threshold=100, invert=False):
   # blur = cv2.GaussianBlur(image,(5,5),0)
   # find otsu's threshold value with OpenCV function
   _, image = cv2.threshold(image, 0 , 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+
+  if __DEBUG__:
+    show_image(image)
   if invert:
     image = cv2.bitwise_not(image)  # invert the image
   return image
