@@ -8,7 +8,7 @@ import json
 def parse_args():
   # construct the argument parser and parse the arguments
   ap = argparse.ArgumentParser()
-  ap.add_argument("-i", "--image", default="data/reference.jpg",
+  ap.add_argument("-i", "--image",
     help="path to the image to markup.")
   ap.add_argument("--rotate_dir", default=None, 
     help="CW or CCW, rotate the page 90 degrees in that direction.")
@@ -16,7 +16,7 @@ def parse_args():
 
 
 def save_points(refPts, point_name="new_point"):
-  points = utils.load_ref_boxes()
+  points = {}
 
   # Add and save new ones
   points[point_name] = []
@@ -32,7 +32,7 @@ def save_points(refPts, point_name="new_point"):
 def main():
   args = parse_args()
 
-  box = utils.markup_page(utils.load_page(None, None, args["rotate_dir"], image_filepath=args["image"]))
+  box = utils.markup_image(utils.load_page(args["image"], args["rotate_dir"]))
   save_points(box)
 
 if __name__ == '__main__':

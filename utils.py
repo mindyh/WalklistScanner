@@ -1,18 +1,21 @@
 import cv2
 import imutils
 import json
+import math
 import numpy as np
 import os
 import shutil
 import sys
+from typing import Union, Any, List, Optional
 import pytesseract
 from enum import Enum
 import re
 
 __DEBUG__ = False
+
 MAX_BARCODES_ON_PAGE = 8
-# pixels, as measured from the top of one line of voter info to the top of the next one
-DISTANCE_BT_VOTERS = 123  
+# pixels, as measured from the top of one line of voter info to the top of the next one, 300DPI
+DISTANCE_BT_VOTERS = 220
 TEMP_DIR = 'temp/'
 DATA_DIR = 'data/'
 WALKLIST_DIR = 'walklist/'
@@ -21,12 +24,95 @@ CLEAN_IMAGE_FILENAME = 'clean_page.jpg'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
 RESPONSE_CODES_IMAGE_FILENAME = 'response_codes.jpg'
 REFPTS_FILENAME = 'ref_bounding_boxes.json'
+COMMON_REF_FILENAME = 'ref_common.json'
 
-def add_padding(bounding_box, padding, page_size):
-  return ((max(0, bounding_box[0][0] - padding),
-           max(0, bounding_box[0][1] - padding)), 
-          (min(bounding_box[1][0] + padding, page_size[1]),
-           min(bounding_box[1][1] + padding, page_size[0])))
+
+
+class Point:
+  def __init__(self, x, y):
+    # The question it belongs to.
+    self.x = x
+    self.y = y
+
+  @classmethod
+  def from_tuple(cls, raw_points: tuple):
+    return cls(raw_points[0], raw_points[1])
+
+  def calc_distance(self, other_point):
+    return math.sqrt((other_point.x - self.x)**2 + (other_point.y - self.y)**2)  
+
+  def to_list(self):
+    return [self.x, self.y]
+
+  def to_tuple(self):
+    return (self.x, self.y)
+
+
+class BoundingBox:
+  def __init__(self, top_left, bottom_right):
+    # The question it belongs to.
+    self.raw_bounding_box = [top_left, bottom_right]  # List of 2 tuples
+    self.top_left = top_left  # Point class
+    self.bottom_right = bottom_right  # Point class
+    self.height = self.bottom_right.y - self.top_left.y 
+    self.width = self.bottom_right.x - self.top_left.x
+
+  """Loading from a list of tuples."""
+  @classmethod
+  def from_raw(cls, raw_bounding_box: list):
+    return cls(Point.from_tuple(raw_bounding_box[0]), Point.from_tuple(raw_bounding_box[1]))
+  
+  @classmethod
+  def from_list_of_points(cls, raw_bounding_box: list):
+    return cls(raw_bounding_box[0], raw_bounding_box[1])
+
+  """ Only works from a smaller image to a larger image!
+      TODO: support going from a large image to a small image.
+      original_origin is what the origin of the BoundingBox is in the coordinate
+      system you want to transform to.
+  """
+  def update_coordinate_system(self, original_origin):
+    self.top_left.x = self.top_left.x + original_origin.x
+    self.top_left.y = self.top_left.y + original_origin.y
+    self.bottom_right.x = self.bottom_right.x + original_origin.x
+    self.bottom_right.y = self.bottom_right.y + original_origin.y
+    return self
+
+
+  def add_padding(self, padding, page_size):
+    self.top_left.x = max(0, self.top_left.x - padding)
+    self.top_left.y = max(0, self.top_left.y - padding)
+    self.bottom_right.x = min(self.bottom_right.x + padding, page_size[1])
+    self.bottom_right.y = min(self.bottom_right.y + padding, page_size[0])
+    return self
+
+
+  def to_list(self):
+    return [self.top_left.to_list(), self.bottom_right.to_list()]
+             
+
+class ResponseCode:
+  def __init__(self, bounding_box, question_number: int, value: str, coords: Point=None):
+    # Coordinates are calculated as the center of the
+    # bounding box around the scan code.
+    if not coords:
+      self.coords = Point(int((bounding_box.top_left.x + bounding_box.bottom_right.x) / 2.0),
+                          int((bounding_box.top_left.y + bounding_box.bottom_right.y) / 2.0))
+    else:
+      self.coords = coords
+    # The question it belongs to.
+    if type(bounding_box) is list:
+      self.bounding_box = BoundingBox.from_raw(bounding_box)
+    else:
+      self.bounding_box = bounding_box
+
+    self.question_number = question_number
+    self.value = value
+
+  # A dict representation of the ResponseCode.
+  def get_dict(self):
+    return { "coords": self.coords, "question_number": self.question_number, 
+      "value": self.value, "bounding_box": self.bounding_box.to_list() }
 
 
 def show_image(image):
@@ -41,34 +127,50 @@ def is_non_zero_file(fpath):
     return os.path.isfile(fpath) and os.path.getsize(fpath) > 0
 
 
-def load_ref_boxes(list_id):
+def load_raw_ref_boxes(list_id):
   boxes = {}
   filepath = '{}{}/{}'.format(DATA_DIR, list_id, REFPTS_FILENAME)
 
   if is_non_zero_file(filepath):
     with open(filepath, "r+") as f:
-      boxes = json.load(f)
-
+      boxes = json.load(f)  
   return boxes
+
+
+def load_ref_boxes(list_id):
+  boxes = load_raw_ref_boxes(list_id)
+  for key, box in boxes.items():
+    boxes[key] = BoundingBox.from_raw(box)
+  return boxes
+
+
+def load_common_refs():
+  references = {}
+  if is_non_zero_file(COMMON_REF_FILENAME):
+    with open(COMMON_REF_FILENAME, "r+") as f:
+      references = json.load(f)
+  return references
 
 
 def save_ref_boxes(list_id, dict_to_add):
   filepath = '{}{}/{}'.format(DATA_DIR, list_id, REFPTS_FILENAME)
-  boxes = load_ref_boxes(list_id)
+  boxes = load_raw_ref_boxes(list_id)
   with open(filepath, "w+") as f:
     boxes.update(dict_to_add)
     json.dump(boxes, f)
 
 
 # Region of interest, the cropped image of the text.
-def get_roi(image, bounding_box, padding=0.0):
+def get_roi(image, bounding_box: BoundingBox, padding=0.0):
   # dummy until I figure out what this is
   rW = 1
   rH = 1
   (origH, origW) = image.shape[:2]
 
-  startX, startY = bounding_box[0]
-  endX, endY = bounding_box[1]
+  startX = bounding_box.top_left.x
+  startY = bounding_box.top_left.y
+  endX = bounding_box.bottom_right.x
+  endY = bounding_box.bottom_right.y
 
   # scale the bounding box coordinates based on the respective
   # ratios
@@ -99,7 +201,7 @@ class SegmentationMode(Enum):
   BLOCK_OF_TEXT = 6
 
 
-def run_ocr(image, bounding_box=None, segmentation_mode=SegmentationMode.SINGLE_WORD):
+def run_ocr(image, bounding_box: BoundingBox=None, segmentation_mode=SegmentationMode.SINGLE_WORD):
   if bounding_box:
     image = get_roi(image, bounding_box)
 
@@ -114,7 +216,7 @@ def run_ocr(image, bounding_box=None, segmentation_mode=SegmentationMode.SINGLE_
   return text
 
 
-def get_list_id_from_page(page, bounding_box):
+def get_list_id_from_page(page, bounding_box: BoundingBox):
   list_id = get_list_id(get_roi(page, bounding_box))
   return list_id
 
@@ -139,9 +241,9 @@ def get_list_id(image):
   return list_id
 
 
-refPts = []
+refPts: List[tuple] = []
 is_cropping = False
-def markup_page(image):
+def markup_image(image) -> BoundingBox:
   def click_and_drag(event, x, y, flags, param):
     # grab references to the global variables
     global refPts, is_cropping
@@ -192,30 +294,10 @@ def markup_page(image):
   # image = clone.copy()
   cv2.destroyAllWindows()
 
-  return refPts
+  return BoundingBox.from_raw(refPts)
 
 
-class ResponseCode:
-  def __init__(self, bounding_box, question_number, value, coords=None):
-    # Coordinates are calculated as the center of the
-    # bounding box around the scan code.
-    if not coords:
-      self.coords = (int((bounding_box[0][0] + bounding_box[1][0]) / 2.0),
-        int((bounding_box[0][1] + bounding_box[1][1]) / 2.0))
-    else:
-      self.coords = coords
-    # The question it belongs to.
-    self.bounding_box = bounding_box
-    self.question_number = question_number
-    self.value = value
-
-  # A dict representation of the ResponseCode.
-  def get_dict(self):
-    return { "coords": self.coords, "question_number": self.question_number, 
-      "value": self.value, "bounding_box": self.bounding_box }
-
-
-def load_response_codes(list_id):
+def load_response_codes(list_id) -> List[ResponseCode]:
   response_codes = []
   response_codes_filepath = "{}{}/{}".format(DATA_DIR, list_id, RESPONSE_CODES_FILENAME)
   with open(response_codes_filepath, "r+") as f:
@@ -224,7 +306,7 @@ def load_response_codes(list_id):
       response_codes.append(ResponseCode(response_dict["bounding_box"],
                                          response_dict["question_number"],
                                          response_dict["value"],
-                                         response_dict["coords"]))
+                                         Point.from_tuple(response_dict["coords"])))
 
   return response_codes
 
@@ -248,6 +330,7 @@ def threshold(image, threshold=100, invert=False):
   if invert:
     image = cv2.bitwise_not(image)  # invert the image
   return image
+
 
 def load_page(image_filepath, rotate_dir=None):
   image = cv2.imread(image_filepath, cv2.IMREAD_GRAYSCALE)

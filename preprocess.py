@@ -12,8 +12,10 @@ from pdf2image import convert_from_path
 import os
 import shutil
 import sys
+from typing import Union, Any, List, Optional
 
 import utils
+from utils import ResponseCode, BoundingBox, Point
 
 
 def parse_args():
@@ -22,12 +24,18 @@ def parse_args():
   ap.add_argument("-w", "--walklist", required=True,
     help="path to the PDF of the scanned walklist.")
   ap.add_argument("-c","--clean", required=True,
-    help="path to the PDF of the clean, unmarked page to use as a reference.")
-  ap.add_argument("-n","--clean_page_number", type=int, default=0,
-    help="The page number of the clean page to markup as part of the ingestion.")
+    help="path to the PDF to use as a reference.")
+  ap.add_argument("-p","--page_number", type=int, default=1,
+    help="The page number of the page with clean response codes to markup as part of the ingestion.")
+  ap.add_argument("-l","--line_number", type=int, default=1,
+    help="The line number of the clean response codes to markup as part of the ingestion.")
+  ap.add_argument("-bp","--bold_page_number", type=int,
+    help="The page number of the clean, bolded response codes as part of the ingestion.")
+  ap.add_argument("-bl","--bold_line_number", type=int,
+    help="The line number of clean, bolded response codes.")
   ap.add_argument("--skip_markup", action='store_true', 
     help="For dev purposes, if you want to skip marking up the page")
-  ap.add_argument("--rotate_dir", default=None, 
+  ap.add_argument("-r", "--rotate_dir", default=None, 
     help="CW or CCW, rotate the page 90 degrees in that direction.")
   return vars(ap.parse_args())
 
@@ -61,19 +69,31 @@ def check_for_errors(args):
 
 
 # Returns a list of ResponseCode objects.
-def markup_response_codes(image):
-  response_codes = []
+def markup_response_codes(page, list_id, line_number):
+  # Get line in the page.
+  PADDING = 100  # pixels
+  ref_bounding_boxes = utils.load_ref_boxes(list_id)
+  h, w = page.shape[:2]
+  x1 = int(w / 2)
+  y1 = ref_bounding_boxes["first_barcode"].top_left.y + (utils.DISTANCE_BT_VOTERS * (line_number - 1)) - PADDING
+  markup_roi = page[y1 : min(h, (y1 + utils.DISTANCE_BT_VOTERS + (2*PADDING))), x1:]
+
   # Iterate through and mark each scan code.
+  response_codes = []
   question_number = 1
-  # all non-alphanumeric chars
   while True:
     print ("Please mark each response code in survey question %d." % question_number)
 
-    bounding_box = utils.markup_page(image)
-    text = utils.run_ocr(image, bounding_box, utils.SegmentationMode.SINGLE_WORD)
+    bounding_box = utils.markup_image(markup_roi)
+    text = utils.run_ocr(markup_roi, bounding_box, utils.SegmentationMode.SINGLE_WORD)
      # sometimes OCR picks up stray symbols, get rid of them.
     text = ''.join(ch for ch in text if ch.isalnum())
-    response_code = utils.ResponseCode(bounding_box, question_number, text)
+
+    bounding_box = bounding_box.update_coordinate_system(Point(x1, y1))
+    roi = utils.get_roi(page, bounding_box)
+    utils.show_image(roi)
+
+    response_code = ResponseCode(bounding_box, question_number, text)
 
     print("Extracted scan code: \"%s\"" % response_code.value) 
 
@@ -119,13 +139,13 @@ def get_response_codes_bounding_box(response_codes, page):
   y_max = 0
 
   for response_code in response_codes:
-    x_min = min(x_min, response_code.bounding_box[0][0])
-    y_min = min(y_min, response_code.bounding_box[0][1])
-    x_max = max(x_max, response_code.bounding_box[1][0])
-    y_max = max(y_max, response_code.bounding_box[1][1])
+    x_min = min(x_min, response_code.bounding_box.top_left.x)
+    y_min = min(y_min, response_code.bounding_box.top_left.y)
+    x_max = max(x_max, response_code.bounding_box.bottom_right.x)
+    y_max = max(y_max, response_code.bounding_box.bottom_right.y)
 
-  return utils.add_padding(((x_min, y_min), (x_max, y_max)), 20,
-                           page.shape[:2])
+  ret_bb = BoundingBox(Point(x_min, y_min), Point(x_max, y_max))
+  return ret_bb.add_padding(20, page.shape[:2])
 
 
 # Returns the number of pages in the walklist
@@ -145,12 +165,15 @@ def ingest_walklist(list_id, filepath, rotate_dir):
 def ingest_clean_page(filepath, page_number, rotate_dir):
   pages = convert_from_path(filepath, DPI) 
   temp_path = "%s%s" % (utils.TEMP_DIR, utils.CLEAN_IMAGE_FILENAME)
-  pages[page_number].save(temp_path, 'JPEG')  # Save first page out to temp so we can read it in again
+  pages[page_number].save(temp_path, 'JPEG')  # Save specified page out to temp so we can read it in again
   page_to_markup = utils.load_page(temp_path, rotate_dir)
   
   print ("Please markup the List Id on the page.")
-  bounding_box = utils.markup_page(page_to_markup)
-  list_id = utils.get_list_id(utils.get_roi(page_to_markup, bounding_box))
+  list_id_bb = utils.markup_image(page_to_markup)
+  list_id = utils.get_list_id(utils.get_roi(page_to_markup, list_id_bb))
+
+  print ("Please markup the FIRST barcode on the page.")
+  first_barcode_bb = utils.markup_image(page_to_markup)
 
   # Make the list id directory
   list_dir = '{}{}'.format(utils.DATA_DIR, list_id)
@@ -166,7 +189,7 @@ def ingest_clean_page(filepath, page_number, rotate_dir):
   print("Making the directory %s" % walklist_dir)
 
   # Save the bounding box out.
-  utils.save_ref_boxes(list_id, {"list_id": bounding_box})
+  utils.save_ref_boxes(list_id, {"list_id": list_id_bb.to_list(), "first_barcode": first_barcode_bb.to_list()})
 
   # Save the file out to the correct directory.
   clean_filepath = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.CLEAN_IMAGE_FILENAME)
@@ -181,12 +204,12 @@ def main():
   args = parse_args()
   check_for_errors(args)
 
-  list_id, clean_page = ingest_clean_page(args["clean"], args["clean_page_number"], args["rotate_dir"])  
+  list_id, clean_page = ingest_clean_page(args["clean"], args["page_number"] - 1, args["rotate_dir"])  
   num_pages = ingest_walklist(list_id, args["walklist"], args["rotate_dir"])
 
   response_codes = []
   if not args["skip_markup"]:
-    response_codes = markup_response_codes(clean_page)
+    response_codes = markup_response_codes(clean_page, list_id, args["line_number"])
   else:
     response_codes = utils.load_response_codes(list_id)
 
@@ -195,7 +218,7 @@ def main():
   # Normalize the response code coords
   if not args["skip_markup"]:
     for code in response_codes:
-      code.coords = (code.coords[0] - bounding_box[0][0], code.coords[1] - bounding_box[0][1])
+      code.coords = (code.coords.x - bounding_box.top_left.x, code.coords.y - bounding_box.top_left.y)
 
   # Save out the ResponseCodes themselves.
   save_response_codes(list_id, response_codes)
@@ -205,7 +228,7 @@ def main():
   cv2.imwrite(rc_image_path, utils.get_roi(clean_page, bounding_box))
 
   # Save out the response code bounding box.
-  utils.save_ref_boxes(list_id, {"response_codes": bounding_box})
+  utils.save_ref_boxes(list_id, {"response_codes": bounding_box.to_list()})
 
   print ("Saved out reference response codes.")
   print ("Done, now run scan.py")

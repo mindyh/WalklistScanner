@@ -15,8 +15,10 @@ import math
 import re
 import img2pdf
 import pprint
+from typing import Union, Any, List, Optional, Tuple
 
 import utils
+from utils import ResponseCode, BoundingBox, Point
 
 pp = pprint.PrettyPrinter(width=41)
 
@@ -35,7 +37,6 @@ def parse_args():
 
 
 def check_files_exist(list_id):
-
   # check if there is at least one walklist file
   walklist_dir_path = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.WALKLIST_DIR)
   has_walklists = False
@@ -70,11 +71,10 @@ def extract_barcode_info(barcode, image):
   voter_id = voter_id[:-2]  # remove the CA at the end
 
   (x, y, w, h) = barcode.rect
-  barcode_coords = ((x, y), (x + w, y + h))
+  barcode_bb = BoundingBox(Point(x, y), Point(x + w, y + h))
 
   # draw image
   if utils.__DEBUG__:
-
     # make a deep copy of the image to avoid annotating the original
     markup_image = image.copy()
 
@@ -93,7 +93,7 @@ def extract_barcode_info(barcode, image):
     # print the barcode type and data to the terminal
     print("[INFO] Found barcode: {}".format(barcode))
 
-  return barcode_coords, voter_id
+  return barcode_bb, voter_id
 
 
 def get_voter_id(image, bounding_box):
@@ -107,27 +107,23 @@ def get_voter_id(image, bounding_box):
   return voter_id
 
 
-def get_response_for_barcode(barcode_coords, first_response_coords):
-  padding = 0 # meant this for the next function, but seems to work better!
-  response_h = first_response_coords[1][1] - first_response_coords[0][1]
-  return ((first_response_coords[0][0] - padding, barcode_coords[0][1] - padding),
-          (first_response_coords[1][0] + padding, barcode_coords[0][1] + response_h + padding))
+def get_response_for_barcode(barcode_coords, first_response_coords, page_size):
+  ret_bb = BoundingBox(Point(first_response_coords.top_left.x, barcode_coords.top_left.y),
+                             Point(first_response_coords.bottom_right.x, 
+                             barcode_coords.bottom_right.y + first_response_coords.height))
+  return ret_bb.add_padding(10, page_size)
 
 
-def get_response_including_barcode(barcode_coords, first_response_coords):
-  padding = 15
-  response_height = first_response_coords[1][1] - first_response_coords[0][1]
-  return ((0, barcode_coords[0][1] - padding),
-          (barcode_coords[1][0] + padding, barcode_coords[0][1] + response_height + padding))
-
-
-def calculateDistance(x1, y1, x2, y2):  
-  return math.sqrt((x2 - x1)**2 + (y2 - y1)**2)  
+def get_response_including_barcode(barcode_coords, first_response_coords, page_size):
+  ret_bb = BoundingBox(Point(0, barcode_coords.top_left.y),
+                             Point(barcode_coords.bottom_right.x, 
+                             barcode_coords.bottom_right.y + first_response_coords.height))
+  return ret_bb.add_padding(15, page_size)
 
 
 CONTOUR_LOWER_THRESH = 1900
 CONTOUR_UPPER_THRESH = 5000
-def get_circle_centers(diff):
+def get_circle_centers(diff) -> Tuple[List[Point], bool]:
   # find contours in the thresholded image
   _, contours, hierarchy = cv2.findContours(diff.copy(), cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
  
@@ -143,7 +139,7 @@ def get_circle_centers(diff):
 
     # compute the center of the contour
     M = cv2.moments(hull)
-    center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+    center = Point(int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
 
     if area < CONTOUR_LOWER_THRESH:
       if utils.__DEBUG__:
@@ -152,7 +148,7 @@ def get_circle_centers(diff):
     elif area > CONTOUR_UPPER_THRESH:
       has_error = True
     else:
-      cv2.circle(diff, center, 7, (0,0,255),-1)
+      cv2.circle(diff, center.to_tuple(), 7, (0,0,255),-1)
       contour_centers.append(center)
       
     # show the image
@@ -167,7 +163,9 @@ def get_circle_centers(diff):
 
 # Find all contour centers that are close enough to a response code to be considered
 # "selected"
-def centers_to_responses(centers, response_codes, aligned_response_codes):
+def centers_to_responses(centers: List[Point],
+                         response_codes: List[ResponseCode], 
+                         aligned_response_codes) -> List[ResponseCode]:
   DISTANCE_THRESH = 35
   SPLIT_DIST_THRESH = 5
 
@@ -178,9 +176,9 @@ def centers_to_responses(centers, response_codes, aligned_response_codes):
     (second_code, second_dist) = None, 9999999
     for code in response_codes:
       if utils.__DEBUG__:
-        cv2.circle(aligned_response_codes, tuple(code.coords), 4, (255, 0, 0), thickness=3)
+        cv2.circle(aligned_response_codes, code.coords.to_tuple(), 4, (255, 0, 0), thickness=3)
 
-      dist = calculateDistance(center[0], center[1], code.coords[0], code.coords[1])
+      dist = center.calc_distance(code.coords)
 
       if dist < DISTANCE_THRESH:
         if dist < closest_dist:
@@ -205,9 +203,11 @@ def centers_to_responses(centers, response_codes, aligned_response_codes):
 
 
 # Returns a list of circled response codes.
-def get_circled_responses(response_bounding_box, response_codes, page, ref_response_codes):
+def get_circled_responses(response_bounding_box: BoundingBox, 
+                          response_codes: List[ResponseCode],
+                          page, ref_response_codes) -> Tuple[Optional[List[ResponseCode]], bool]:
   # carve out the roi
-  cur_response_codes = utils.get_roi(page, list(response_bounding_box))
+  cur_response_codes = utils.get_roi(page, response_bounding_box)
   cur_response_codes = cv2.cvtColor(cur_response_codes, cv2.COLOR_BGR2GRAY)
   cur_response_codes = utils.threshold(cur_response_codes)
 
@@ -241,13 +241,15 @@ def get_circled_responses(response_bounding_box, response_codes, page, ref_respo
   return circled_responses, has_error
 
 
-def manual_review(response_bounding_box, page, circled_responses, voter_id, response_codes):
+def manual_review(response_bounding_box: BoundingBox, 
+                  page, circled_responses: List[ResponseCode],
+                  voter_id, response_codes: List[ResponseCode]) -> Tuple[bool, List[ResponseCode]]:
   user_verdict = None
 
   top_margin = 50
 
   # init response_image
-  responses_image = utils.get_roi(page, list(response_bounding_box))
+  responses_image = utils.get_roi(page, response_bounding_box)
   responses_image = cv2.copyMakeBorder(responses_image, top_margin,0,0,0, cv2.BORDER_CONSTANT, value=(0,0,0))
 
   # get list of responses
@@ -257,7 +259,7 @@ def manual_review(response_bounding_box, page, circled_responses, voter_id, resp
       response_pairs.append('Q{}: {}'.format(resp.question_number, resp.value))
 
       # add dots in the center of each highlighted response code
-      cv2.circle(responses_image, (resp.coords[0], resp.coords[1]+top_margin), 6, (0,0,255),-1)
+      cv2.circle(responses_image, (resp.coords.x, resp.coords.y + top_margin), 6, (0,0,255),-1)
 
     # convert to a string
     response_string = ", ".join(response_pairs)
@@ -343,8 +345,9 @@ def error_check_responses(responses):
 
 
 def create_error_image(page, barcode_coords, first_response_coords):
-  full_response_bounding_box = get_response_including_barcode(barcode_coords, first_response_coords)
-  error_image = utils.get_roi(page, list(full_response_bounding_box))
+  full_response_bounding_box = get_response_including_barcode(barcode_coords, 
+      first_response_coords, page.shape[:2])
+  error_image = utils.get_roi(page, full_response_bounding_box)
   return(error_image)
 
 
@@ -472,12 +475,12 @@ def scan_barcode(barcode, page, ref_bounding_boxes, list_dir, response_codes, ar
   results_stats['num_scanned_barcodes'] += 1
 
   if utils.__DEBUG__:
-    cv2.rectangle(page, barcode_coords[0], barcode_coords[1], (255, 0, 255), 3)
+    cv2.rectangle(page, barcode_coords.top_left.to_tuple(), barcode_coords.bottom_right.to_tuple(), 
+                  (255, 0, 255), 3)
     utils.show_image(page)
 
   # Get the corresponding response codes region
-  response_bounding_box = get_response_for_barcode(barcode_coords, 
-                            ref_bounding_boxes["response_codes"])
+  response_bounding_box = get_response_for_barcode(barcode_coords,                             ref_bounding_boxes["response_codes"], page.shape[:2])
 
   # Figure out which ones are circled
   ref_response_codes = utils.load_page(list_dir + utils.RESPONSE_CODES_IMAGE_FILENAME)
@@ -490,10 +493,10 @@ def scan_barcode(barcode, page, ref_bounding_boxes, list_dir, response_codes, ar
 
   # Do manual review if flagged and no errors
   if args["manual_review"] and not has_error:
-    verdict_wrong, circled_responses = manual_review(response_bounding_box, page, circled_responses, voter_id, response_codes)
+    verdict_right, circled_responses = manual_review(response_bounding_box, page, circled_responses, voter_id, response_codes)
 
     # if user verdict is false, add the voter_id to the list of incorrect scans
-    if verdict_wrong:
+    if not verdict_right:
       results_stats['incorrect_scans'].append(voter_id)
 
   if has_error:
