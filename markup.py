@@ -23,16 +23,16 @@ def save_points(refPts, point_name="new_point"):
   for point in refPts:
     points[point_name].append(point)
 
-  with open(utils.REFPTS_FILENAME, "w+") as f:
+  with open(utils.REF_BB_FILENAME, "w+") as f:
     json.dump(points, f)
 
-  print ("Saved to %s." % utils.REFPTS_FILENAME)
+  print ("Saved to %s." % utils.REF_BB_FILENAME)
 
 
 def main():
   args = parse_args()
 
-  box = utils.markup_image(utils.load_page(args["image"], args["rotate_dir"]))
+  box = utils.markup_image(utils.load_image(args["image"], args["rotate_dir"]))
   save_points(box)
 
 if __name__ == '__main__':

@@ -12,7 +12,7 @@ from pdf2image import convert_from_path
 import os
 import shutil
 import sys
-from typing import Union, Any, List, Optional
+from typing import Union, Any, List, Optional, Tuple
 
 import utils
 from utils import ResponseCode, BoundingBox, Point
@@ -29,10 +29,12 @@ def parse_args():
     help="The page number of the page with clean response codes to markup as part of the ingestion.")
   ap.add_argument("-l","--line_number", type=int, default=1,
     help="The line number of the clean response codes to markup as part of the ingestion.")
-  ap.add_argument("-bp","--bold_page_number", type=int,
+  ap.add_argument("-bp","--bold_page_number", type=int, default=1,
     help="The page number of the clean, bolded response codes as part of the ingestion.")
-  ap.add_argument("-bl","--bold_line_number", type=int,
+  ap.add_argument("-bl","--bold_line_number", type=int, default =1,
     help="The line number of clean, bolded response codes.")
+  ap.add_argument("--skip_bold", action='store_true',
+    help="Skip marking up bold responses.")
   ap.add_argument("--skip_markup", action='store_true', 
     help="For dev purposes, if you want to skip marking up the page")
   ap.add_argument("-r", "--rotate_dir", default=None, 
@@ -68,15 +70,21 @@ def check_for_errors(args):
     os.mkdir(utils.DATA_DIR)
 
 
-# Returns a list of ResponseCode objects.
-def markup_response_codes(page, list_id, line_number):
+"""Returns the bounding box of the right half of the line, for markup."""
+def get_line_bounding_box(line_number: int, list_id: str, page_size: Tuple[int, int]) -> BoundingBox:
   # Get line in the page.
-  PADDING = 100  # pixels
+  PADDING = 50  # pixels
   ref_bounding_boxes = utils.load_ref_boxes(list_id)
-  h, w = page.shape[:2]
-  x1 = int(w / 2)
+  h, w = page_size
   y1 = ref_bounding_boxes["first_barcode"].top_left.y + (utils.DISTANCE_BT_VOTERS * (line_number - 1)) - PADDING
-  markup_roi = page[y1 : min(h, (y1 + utils.DISTANCE_BT_VOTERS + (2*PADDING))), x1:]
+  return BoundingBox(Point(int(w / 2), y1), Point(w, min(h, (y1 + utils.DISTANCE_BT_VOTERS + (2 * PADDING)))))
+
+
+# Returns a list of ResponseCode objects.
+def markup_response_codes(page, list_id: str, line_number: int):
+  # Get line in the page.
+  line_bb = get_line_bounding_box(line_number, list_id, page.shape[:2])
+  markup_roi = utils.get_roi(page, line_bb)
 
   # Iterate through and mark each scan code.
   response_codes = []
@@ -89,10 +97,8 @@ def markup_response_codes(page, list_id, line_number):
      # sometimes OCR picks up stray symbols, get rid of them.
     text = ''.join(ch for ch in text if ch.isalnum())
 
-    bounding_box = bounding_box.update_coordinate_system(Point(x1, y1))
+    bounding_box = bounding_box.update_coordinate_system(line_bb.top_left)
     roi = utils.get_roi(page, bounding_box)
-    utils.show_image(roi)
-
     response_code = ResponseCode(bounding_box, question_number, text)
 
     print("Extracted scan code: \"%s\"" % response_code.value) 
@@ -127,7 +133,7 @@ def save_response_codes(list_id, response_codes):
     response_code = response_codes[ctr]
     response_code_dict[ctr] = response_code.get_dict()
 
-  with open('{}{}/{}'.format(utils.DATA_DIR, list_id, utils.RESPONSE_CODES_FILENAME), "w+") as f:
+  with open(utils.get_list_dir(list_id) + utils.RESPONSE_CODES_FILENAME, "w+") as f:
     json.dump(response_code_dict, f)
 
 
@@ -161,22 +167,26 @@ def ingest_walklist(list_id, filepath, rotate_dir):
   return num_pages
 
 
+def get_temp_page(pages, page_number: int, rotate_dir: str, temp_filename: str) -> np.array:
+  temp_path = "%s%s" % (utils.TEMP_DIR, temp_filename)
+  pages[page_number - 1].save(temp_path, 'JPEG')  # Save specified page out to temp so we can read it in again
+  return utils.load_image(temp_path, rotate_dir)
+
+
 # Markup a clean page to get the list_id
-def ingest_clean_page(filepath, page_number, rotate_dir):
+def ingest_clean_page(filepath, page_number, rotate_dir, bold_page_number, bold_line_number):
   pages = convert_from_path(filepath, DPI) 
-  temp_path = "%s%s" % (utils.TEMP_DIR, utils.CLEAN_IMAGE_FILENAME)
-  pages[page_number].save(temp_path, 'JPEG')  # Save specified page out to temp so we can read it in again
-  page_to_markup = utils.load_page(temp_path, rotate_dir)
+  page_to_markup = get_temp_page(pages, page_number, rotate_dir, utils.CLEAN_IMAGE_FILENAME)
   
   print ("Please markup the List Id on the page.")
   list_id_bb = utils.markup_image(page_to_markup)
   list_id = utils.get_list_id(utils.get_roi(page_to_markup, list_id_bb))
+  list_dir = utils.get_list_dir(list_id)
 
   print ("Please markup the FIRST barcode on the page.")
   first_barcode_bb = utils.markup_image(page_to_markup)
 
   # Make the list id directory
-  list_dir = '{}{}'.format(utils.DATA_DIR, list_id)
   if not os.path.exists(list_dir):
     print("Making the directory %s" % list_dir)
     os.mkdir(list_dir)
@@ -196,6 +206,26 @@ def ingest_clean_page(filepath, page_number, rotate_dir):
   print("Saving image to %s" % clean_filepath)
   cv2.imwrite(clean_filepath, page_to_markup)
 
+  # Markup the bold responses.
+  if bold_page_number and bold_line_number:
+    bold_page_to_markup = get_temp_page(pages, bold_page_number, rotate_dir, "bold_" + utils.CLEAN_IMAGE_FILENAME)
+
+    print ("Please markup the bold response codes on the page.")
+    line_bb = get_line_bounding_box(bold_line_number, list_id, bold_page_to_markup.shape[:2])
+    bold_responses_bb = utils.markup_image(utils.get_roi(bold_page_to_markup, line_bb))
+    bold_responses_bb = bold_responses_bb.update_coordinate_system(line_bb.top_left)
+
+    # Save the bounding box out.
+    utils.save_ref_boxes(list_id, {"bold_response_codes": bold_responses_bb.to_list()})
+    # Save the image out.
+    bold_rc_image_path = list_dir + utils.BOLD_RESPONSE_CODES_IMAGE_FILENAME
+    cv2.imwrite(bold_rc_image_path, utils.get_roi(bold_page_to_markup, bold_responses_bb))
+
+  # Save the file out to the correct directory.
+  clean_filepath = list_dir + utils.CLEAN_IMAGE_FILENAME
+  print("Saving image to %s" % clean_filepath)
+  cv2.imwrite(clean_filepath, page_to_markup)
+
   print("Done ingesting the clean PDF.")  
   return list_id, page_to_markup
 
@@ -204,7 +234,12 @@ def main():
   args = parse_args()
   check_for_errors(args)
 
-  list_id, clean_page = ingest_clean_page(args["clean"], args["page_number"] - 1, args["rotate_dir"])  
+  if args["skip_bold"]:
+     args["bold_page_number"] = None
+     args["bold_line_number"] = None
+
+  list_id, clean_page = ingest_clean_page(args["clean"], args["page_number"], args["rotate_dir"],
+                                          args["bold_page_number"], args["bold_line_number"])  
   num_pages = ingest_walklist(list_id, args["walklist"], args["rotate_dir"])
 
   response_codes = []
@@ -219,16 +254,28 @@ def main():
   if not args["skip_markup"]:
     for code in response_codes:
       code.coords = (code.coords.x - bounding_box.top_left.x, code.coords.y - bounding_box.top_left.y)
+    # Save out the ResponseCodes themselves.
+    save_response_codes(list_id, response_codes)
 
-  # Save out the ResponseCodes themselves.
-  save_response_codes(list_id, response_codes)
+    # Save out the response code image.
+    rc_image_path = utils.get_list_dir(list_id) + utils.RESPONSE_CODES_IMAGE_FILENAME
+    rc_roi = utils.get_roi(clean_page, bounding_box)
+    cv2.imwrite(rc_image_path, rc_roi)
 
-  # Save out the response code image.
-  rc_image_path = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.RESPONSE_CODES_IMAGE_FILENAME)
-  cv2.imwrite(rc_image_path, utils.get_roi(clean_page, bounding_box))
+    # Save out the response code bounding box.
+    utils.save_ref_boxes(list_id, {"response_codes": bounding_box.to_list()})
 
-  # Save out the response code bounding box.
-  utils.save_ref_boxes(list_id, {"response_codes": bounding_box.to_list()})
+  if not args["skip_bold"]:
+    # Save out the bold response code image.
+    list_dir = utils.get_list_dir(list_id)
+    rc_roi = utils.load_image(list_dir + utils.RESPONSE_CODES_IMAGE_FILENAME)
+    bold_rc_roi = utils.load_image(list_dir + utils.BOLD_RESPONSE_CODES_IMAGE_FILENAME)
+    aligned_bold_rc_roi, _ = utils.alignImages(bold_rc_roi, rc_roi)
+
+    utils.show_image(aligned_bold_rc_roi)
+
+    bold_rc_image_path = list_dir + utils.BOLD_RESPONSE_CODES_IMAGE_FILENAME
+    cv2.imwrite(bold_rc_image_path, aligned_bold_rc_roi)
 
   print ("Saved out reference response codes.")
   print ("Done, now run scan.py")

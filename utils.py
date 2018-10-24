@@ -6,12 +6,13 @@ import numpy as np
 import os
 import shutil
 import sys
-from typing import Union, Any, List, Optional
+from typing import Union, Any, List, Optional, Tuple, Dict
 import pytesseract
 from enum import Enum
 import re
 
 __DEBUG__ = False
+# __DEBUG__ = True
 
 MAX_BARCODES_ON_PAGE = 8
 # pixels, as measured from the top of one line of voter info to the top of the next one, 300DPI
@@ -23,9 +24,9 @@ ERROR_PAGES_DIR = 'error_pages/'
 CLEAN_IMAGE_FILENAME = 'clean_page.jpg'
 RESPONSE_CODES_FILENAME = 'response_codes.json'
 RESPONSE_CODES_IMAGE_FILENAME = 'response_codes.jpg'
-REFPTS_FILENAME = 'ref_bounding_boxes.json'
+BOLD_RESPONSE_CODES_IMAGE_FILENAME = 'bold_' + RESPONSE_CODES_IMAGE_FILENAME
+REF_BB_FILENAME = 'ref_bounding_boxes.json'
 COMMON_REF_FILENAME = 'ref_common.json'
-
 
 
 class Point:
@@ -115,7 +116,7 @@ class ResponseCode:
       "value": self.value, "bounding_box": self.bounding_box.to_list() }
 
 
-def show_image(image):
+def show_image(image: np.array):
   # show the output image
   cv2.namedWindow("Image", 0)
   cv2.resizeWindow("Image", 100, 100)
@@ -127,9 +128,9 @@ def is_non_zero_file(fpath):
     return os.path.isfile(fpath) and os.path.getsize(fpath) > 0
 
 
-def load_raw_ref_boxes(list_id):
-  boxes = {}
-  filepath = '{}{}/{}'.format(DATA_DIR, list_id, REFPTS_FILENAME)
+def load_raw_ref_boxes(list_id: str) -> dict:
+  boxes: dict = {}
+  filepath = get_list_dir(list_id) + REF_BB_FILENAME
 
   if is_non_zero_file(filepath):
     with open(filepath, "r+") as f:
@@ -137,7 +138,7 @@ def load_raw_ref_boxes(list_id):
   return boxes
 
 
-def load_ref_boxes(list_id):
+def load_ref_boxes(list_id: str) -> Dict[str, BoundingBox]:
   boxes = load_raw_ref_boxes(list_id)
   for key, box in boxes.items():
     boxes[key] = BoundingBox.from_raw(box)
@@ -153,7 +154,7 @@ def load_common_refs():
 
 
 def save_ref_boxes(list_id, dict_to_add):
-  filepath = '{}{}/{}'.format(DATA_DIR, list_id, REFPTS_FILENAME)
+  filepath = get_list_id(list_id) + REF_BB_FILENAME
   boxes = load_raw_ref_boxes(list_id)
   with open(filepath, "w+") as f:
     boxes.update(dict_to_add)
@@ -221,7 +222,7 @@ def get_list_id_from_page(page, bounding_box: BoundingBox):
   return list_id
 
 
-def get_list_id(image):
+def get_list_id(image: np.array) -> Optional[str]:
   text = run_ocr(image)
   
   list_id = text.split(': ')[1]
@@ -311,11 +312,11 @@ def load_response_codes(list_id) -> List[ResponseCode]:
   return response_codes
 
 
-def get_page_filename(list_id, page_number):
+def get_page_filename(list_id: str, page_number):
   return '%s%s/%spage%d.jpg' % (DATA_DIR, list_id, WALKLIST_DIR, page_number)
 
 
-def get_list_dir(list_id):
+def get_list_dir(list_id: str):
   return "{}{}/".format(DATA_DIR, list_id)
 
 
@@ -332,7 +333,7 @@ def threshold(image, threshold=100, invert=False):
   return image
 
 
-def load_page(image_filepath, rotate_dir=None):
+def load_image(image_filepath, rotate_dir=None):
   image = cv2.imread(image_filepath, cv2.IMREAD_GRAYSCALE)
 
   if rotate_dir == "CW":
@@ -343,8 +344,34 @@ def load_page(image_filepath, rotate_dir=None):
   return image
 
 
+"""Pad and crop im_to_change until they're the same size as ref_image."""
+def make_images_same_size(im_to_change: np.array, ref_image: np.array) -> np.array:
+  h1, w1 = im_to_change.shape[:2]
+  h2, w2 = ref_image.shape[:2]
+
+  # If it's the same, return without changing anything.
+  if h1 == h2 and w1 == w2:
+    return im_to_change
+
+  height_diff = abs(h1 - h2)
+  if (h1 > h2):
+    im_to_change = cv2.copyMakeBorder(im_to_change, height_diff, 0, 0, 0, cv2.BORDER_CONSTANT, (255, 255, 255))
+  else:
+    im_to_change = im_to_change[:-height_diff, :]
+
+  width_diff = abs(w1 - w2)
+  if (w1 > w2):
+    im_to_change = cv2.copyMakeBorder(im_to_change, 0, 0, 0, width_diff, cv2.BORDER_CONSTANT, (255, 255, 255))
+  else:
+    im_to_change = im_to_change[:, :-width_diff]
+
+  return im_to_change
+
+
 # from https://www.learnopencv.com/image-alignment-feature-based-using-opencv-c-python/
-def alignImages(im_to_be_aligned, ref_image):
+def alignImages(im_to_be_aligned: np.array, ref_image: np.array):
+  im_to_be_aligned = make_images_same_size(im_to_be_aligned, ref_image)
+
   MAX_FEATURES = 500
   GOOD_MATCH_PERCENT = 0.15
  

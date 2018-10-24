@@ -27,7 +27,7 @@ def parse_args():
   ap = argparse.ArgumentParser()
   ap.add_argument("-l", "--list_id", required=True,
     help="ID of the list to scan")
-  ap.add_argument("--rotate_dir", default=None, 
+  ap.add_argument("-r", "--rotate_dir", default=None, 
     help="CW or CCW, rotate the page 90 degrees")
   ap.add_argument("--start_page", type=int, default=0, 
     help="The page number to start from.")
@@ -202,20 +202,45 @@ def centers_to_responses(centers: List[Point],
   return selected_responses
 
 
+# Figure out if this current response code is bolded or not and return the appropriate
+# diffed image and the aligned response codes.
+def get_diffed_response_codes(cur_rc: np.array, list_dir: str) -> Tuple[np.array, np.array]:
+  cur_rc = cv2.cvtColor(cur_rc, cv2.COLOR_BGR2GRAY)
+  cur_rc = utils.threshold(cur_rc)
+
+  # Load the reference response codes, bold and not bold version.
+  ref_rc = utils.load_image(list_dir + utils.RESPONSE_CODES_IMAGE_FILENAME)
+  ref_rc = cv2.cvtColor(ref_rc, cv2.COLOR_BGR2GRAY)
+  ref_rc = utils.threshold(ref_rc)
+
+  bold_ref_rc = utils.load_image(list_dir + utils.BOLD_RESPONSE_CODES_IMAGE_FILENAME)
+  bold_ref_rc = cv2.cvtColor(bold_ref_rc, cv2.COLOR_BGR2GRAY)
+  bold_ref_rc = utils.threshold(bold_ref_rc)
+
+  # Align and diff against both reference images.
+  aligned_rc, _ = utils.alignImages(cur_rc, ref_rc)
+  bold_aligned_rc, _ = utils.alignImages(cur_rc, bold_ref_rc)
+
+  diff = cv2.bitwise_xor(aligned_rc, ref_rc)
+  bold_diff = cv2.bitwise_xor(bold_aligned_rc, bold_ref_rc)
+
+  # Count how many white pixels are in each diff.
+  white_pixels = cv2.countNonZero(diff)
+  bold_white_pixels = cv2.countNonZero(bold_diff)
+
+  # The one with the least white pixels should be the correct image.
+  if white_pixels < bold_white_pixels:
+    return diff, aligned_rc
+  else:
+    return bold_diff, bold_aligned_rc
+
+
 # Returns a list of circled response codes.
 def get_circled_responses(response_bounding_box: BoundingBox, 
                           response_codes: List[ResponseCode],
-                          page, ref_response_codes) -> Tuple[Optional[List[ResponseCode]], bool]:
-  # carve out the roi
+                          page, list_dir) -> Tuple[Optional[List[ResponseCode]], bool]:
   cur_response_codes = utils.get_roi(page, response_bounding_box)
-  cur_response_codes = cv2.cvtColor(cur_response_codes, cv2.COLOR_BGR2GRAY)
-  cur_response_codes = utils.threshold(cur_response_codes)
-
-  ref_response_codes = cv2.cvtColor(ref_response_codes, cv2.COLOR_BGR2GRAY)
-  ref_response_codes = utils.threshold(ref_response_codes)
-
-  aligned_response_codes, _ = utils.alignImages(cur_response_codes, ref_response_codes)
-  diff = cv2.bitwise_xor(aligned_response_codes, ref_response_codes)
+  diff, aligned_response_codes = get_diffed_response_codes(cur_response_codes, list_dir)
 
   # crop pixels to account for the alignment algo introducing whitespace
   diff = diff[20:, 0:-10]
@@ -434,7 +459,7 @@ def save_error_pages(error_pages, list_id):
 
 
 def scan_page(args, page_number, ref_page, ref_bounding_boxes, list_dir, results_scans, results_stats, results_errors):
-  page = utils.load_page(utils.get_page_filename(args['list_id'], page_number), args["rotate_dir"])
+  page = utils.load_image(utils.get_page_filename(args['list_id'], page_number), args["rotate_dir"])
   response_codes = utils.load_response_codes(args['list_id'])
 
   # align page
@@ -480,11 +505,10 @@ def scan_barcode(barcode, page, ref_bounding_boxes, list_dir, response_codes, ar
     utils.show_image(page)
 
   # Get the corresponding response codes region
-  response_bounding_box = get_response_for_barcode(barcode_coords,                             ref_bounding_boxes["response_codes"], page.shape[:2])
+  response_bounding_box = get_response_for_barcode(barcode_coords, ref_bounding_boxes["response_codes"], page.shape[:2])
 
   # Figure out which ones are circled
-  ref_response_codes = utils.load_page(list_dir + utils.RESPONSE_CODES_IMAGE_FILENAME)
-  circled_responses, has_error = get_circled_responses(response_bounding_box, response_codes, page, ref_response_codes)
+  circled_responses, has_error = get_circled_responses(response_bounding_box, response_codes, page, list_dir)
   has_error = has_error or error_check_responses(circled_responses)
 
   # if has an error at this point, add to the error tally
@@ -575,7 +599,7 @@ def main():
   list_dir = utils.get_list_dir(args["list_id"])
 
   ref_bounding_boxes = utils.load_ref_boxes(args["list_id"])
-  ref_page = utils.load_page(list_dir + utils.CLEAN_IMAGE_FILENAME)
+  ref_page = utils.load_image(list_dir + utils.CLEAN_IMAGE_FILENAME)
 
   # init results object
   results_scans = []
