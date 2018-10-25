@@ -14,6 +14,7 @@ import re
 __DEBUG__ = False
 # __DEBUG__ = True
 
+COLOR_WHITE = (255, 255, 255)
 MAX_BARCODES_ON_PAGE = 8
 # pixels, as measured from the top of one line of voter info to the top of the next one, 300DPI
 DISTANCE_BT_VOTERS = 220
@@ -154,7 +155,7 @@ def load_common_refs():
 
 
 def save_ref_boxes(list_id, dict_to_add):
-  filepath = get_list_id(list_id) + REF_BB_FILENAME
+  filepath = get_list_dir(list_id) + REF_BB_FILENAME
   boxes = load_raw_ref_boxes(list_id)
   with open(filepath, "w+") as f:
     boxes.update(dict_to_add)
@@ -346,25 +347,21 @@ def load_image(image_filepath, rotate_dir=None):
 
 """Pad and crop im_to_change until they're the same size as ref_image."""
 def make_images_same_size(im_to_change: np.array, ref_image: np.array) -> np.array:
-  h1, w1 = im_to_change.shape[:2]
-  h2, w2 = ref_image.shape[:2]
+  h, w = im_to_change.shape[:2]
+  ref_h, ref_w = ref_image.shape[:2]
 
-  # If it's the same, return without changing anything.
-  if h1 == h2 and w1 == w2:
-    return im_to_change
+  height_diff = abs(h - ref_h)
+  if (ref_h > h):
+    im_to_change = cv2.copyMakeBorder(im_to_change, height_diff, 0, 0, 0, cv2.BORDER_CONSTANT, value=COLOR_WHITE)
+  elif (height_diff != 0):
+    im_to_change = im_to_change[: -height_diff, :]
 
-  height_diff = abs(h1 - h2)
-  if (h1 > h2):
-    im_to_change = cv2.copyMakeBorder(im_to_change, height_diff, 0, 0, 0, cv2.BORDER_CONSTANT, (255, 255, 255))
-  else:
-    im_to_change = im_to_change[:-height_diff, :]
-
-  width_diff = abs(w1 - w2)
-  if (w1 > w2):
-    im_to_change = cv2.copyMakeBorder(im_to_change, 0, 0, 0, width_diff, cv2.BORDER_CONSTANT, (255, 255, 255))
-  else:
-    im_to_change = im_to_change[:, :-width_diff]
-
+  width_diff = abs(w - ref_w)
+  if (ref_w > w):
+    im_to_change = cv2.copyMakeBorder(im_to_change, 0, 0, 0, width_diff, cv2.BORDER_CONSTANT, value=COLOR_WHITE)
+  elif width_diff != 0:
+    im_to_change = im_to_change[:, : -width_diff]
+  
   return im_to_change
 
 
@@ -404,11 +401,11 @@ def alignImages(im_to_be_aligned: np.array, ref_image: np.array):
     points1[i, :] = keypoints1[match.queryIdx].pt
     points2[i, :] = keypoints2[match.trainIdx].pt
 
-
   height, width = ref_image.shape[:2]
-  # transform = cv2.estimateRigidTransform(points1, points2, False)
-  # aligned_image = cv2.warpAffine(im_to_be_aligned, transform, (width, height),
-  #    borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
+  # transform = cv2.estimateRigidTransform(im_to_be_aligned, ref_image, fullAffine=False)
+  # # transform = cv2.estimateRigidTransform(points1, points2, fullAffine=False)
+  # aligned_image = cv2.warpAffine(im_to_be_aligned, transform, (width, height), flags=cv2.INTER_LINEAR,
+  #   borderMode=cv2.BORDER_CONSTANT, borderValue=COLOR_WHITE)
    
   # Find homography
   transform, mask = cv2.findHomography(points1, points2, cv2.RANSAC)
@@ -416,6 +413,6 @@ def alignImages(im_to_be_aligned: np.array, ref_image: np.array):
   # Use homography
   aligned_image = cv2.warpPerspective(im_to_be_aligned, transform, (width, height), 
                                       borderMode=cv2.BORDER_CONSTANT,
-                                      borderValue=(255, 255, 255))
+                                      borderValue=COLOR_WHITE)
    
   return aligned_image, transform

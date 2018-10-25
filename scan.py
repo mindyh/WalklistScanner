@@ -408,10 +408,8 @@ def generate_error_pages(error_images, skipped_pages, list_id):
   page = None
 
   for i, error_image in enumerate(error_images):
-
     # Create new pages as necessary
     if i % num_images_per_page == 0:
-
       # save the previous page to the error_pages array
       if i > 0:
         error_pages.append(page)
@@ -424,9 +422,10 @@ def generate_error_pages(error_images, skipped_pages, list_id):
     error_image_height, error_image_width = error_image.shape[:2]
     start_x = margin_pixels
     end_x = start_x + error_image_width
-    start_y = images_on_page * error_image_height + margin_pixels
+    start_y = (images_on_page * error_image_height) + margin_pixels
     end_y = start_y + error_image_height
-    page[start_y:end_y,start_x:end_x] = error_image
+
+    page[start_y:end_y, start_x:end_x] = error_image
 
     # increment the images on page counter
     images_on_page += 1 
@@ -622,7 +621,7 @@ def main():
 
   output_results_csv(args['list_id'], list_dir, results_scans)
 
-  generate_error_pages(results_errors['errors_for_human'], results_errors['skipped_pages'], args['list_id'])
+  # generate_error_pages(results_errors['errors_for_human'], results_errors['skipped_pages'], args['list_id'])
 
   # print statistics
   show_statistics(results_stats, args)
