@@ -10,6 +10,8 @@ from typing import Union, Any, List, Optional, Tuple, Dict
 import pytesseract
 from enum import Enum
 import re
+import csv
+import ast
 
 __DEBUG__ = False
 # __DEBUG__ = True
@@ -73,7 +75,7 @@ class BoundingBox:
       original_origin is what the origin of the BoundingBox is in the coordinate
       system you want to transform to.
   """
-  def update_coordinate_system(self, original_origin):
+  def update_coordinate_system(self, original_origin: Point):
     self.top_left.x = self.top_left.x + original_origin.x
     self.top_left.y = self.top_left.y + original_origin.y
     self.bottom_right.x = self.bottom_right.x + original_origin.x
@@ -117,6 +119,18 @@ class ResponseCode:
       "value": self.value, "bounding_box": self.bounding_box.to_list() }
 
 
+def get_line_bb(page, line_number: int, list_dir: str, padding=0, right_half=False):
+  ref_bounding_boxes = load_ref_boxes(list_dir)
+  h, w = page.shape[:2]
+  y1 = ref_bounding_boxes["first_barcode"].top_left.y + (DISTANCE_BT_VOTERS * (line_number - 1)) - padding
+  line_bb =  BoundingBox(Point(0, y1), Point(w, min(h, (y1 + DISTANCE_BT_VOTERS + (2*padding)))))
+  if right_half:
+    # Chop it to the right half, for markup.
+    line_bb.top_left.x = int(line_bb.bottom_right.x / 2)
+
+  return line_bb
+
+
 def show_image(image: np.array):
   # show the output image
   cv2.namedWindow("Image", 0)
@@ -129,9 +143,9 @@ def is_non_zero_file(fpath):
     return os.path.isfile(fpath) and os.path.getsize(fpath) > 0
 
 
-def load_raw_ref_boxes(list_id: str) -> dict:
+def load_raw_ref_boxes(list_dir: str) -> dict:
   boxes: dict = {}
-  filepath = get_list_dir(list_id) + REF_BB_FILENAME
+  filepath = list_dir + REF_BB_FILENAME
 
   if is_non_zero_file(filepath):
     with open(filepath, "r+") as f:
@@ -139,8 +153,8 @@ def load_raw_ref_boxes(list_id: str) -> dict:
   return boxes
 
 
-def load_ref_boxes(list_id: str) -> Dict[str, BoundingBox]:
-  boxes = load_raw_ref_boxes(list_id)
+def load_ref_boxes(list_dir: str) -> Dict[str, BoundingBox]:
+  boxes = load_raw_ref_boxes(list_dir)
   for key, box in boxes.items():
     boxes[key] = BoundingBox.from_raw(box)
   return boxes
@@ -154,9 +168,9 @@ def load_common_refs():
   return references
 
 
-def save_ref_boxes(list_id, dict_to_add):
-  filepath = get_list_dir(list_id) + REF_BB_FILENAME
-  boxes = load_raw_ref_boxes(list_id)
+def save_ref_boxes(list_dir, dict_to_add):
+  filepath = list_dir + REF_BB_FILENAME
+  boxes = load_raw_ref_boxes(list_dir)
   with open(filepath, "w+") as f:
     boxes.update(dict_to_add)
     json.dump(boxes, f)
@@ -225,20 +239,22 @@ def get_list_id_from_page(page, bounding_box: BoundingBox):
 
 def get_list_id(image: np.array) -> Optional[str]:
   text = run_ocr(image)
-  
-  list_id = text.split(': ')[1]
-  # strip out any non-numeric characters
-  list_id = re.sub("[^0-9]", "", list_id)
 
-  # Error check on the list_id.
-  print (list_id)
-  if len(list_id) != 6:
-    print("get_list_id: could not read the list ID.")
+  id_regex_match = re.search(r'\d{6}', text)
+  if id_regex_match:
+    list_id = id_regex_match.group(0)
+      
+    # Error check on the list_id.
+    if len(list_id) != 6:
+      print("get_list_id: could not read the list ID.")
+      return None
+
+    if __DEBUG__:
+      print ("OCR: ", text)
+      print ("List ID: '{}'".format(list_id))
+
+  else:
     return None
-
-  if __DEBUG__:
-    print ("OCR: ", text)
-    print ("List ID: '{}'".format(list_id))
 
   return list_id
 
@@ -416,3 +432,24 @@ def alignImages(im_to_be_aligned: np.array, ref_image: np.array):
                                       borderValue=COLOR_WHITE)
    
   return aligned_image, transform
+
+
+def extractCSVtoDict(filepath):
+  scans = {}
+  with open(filepath, 'r') as file:
+    for row in csv.DictReader(file):
+      questions = {key:value for key, value in row.items() if key is not 'voter_id'}
+      scans[row['voter_id']] = {'voter_id': row['voter_id'], 'questions': questions}
+
+  return scans
+
+
+def convertStringListToList(input_list):
+  if isinstance(input_list, str):
+    if input_list:
+      return ast.literal_eval(input_list)
+    else:
+      return []
+  else:
+    return input_list
+
