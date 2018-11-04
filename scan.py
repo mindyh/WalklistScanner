@@ -4,6 +4,7 @@
 import argparse
 import csv
 import cv2
+import copy
 import json
 import numpy as np
 from pyzbar import pyzbar
@@ -15,11 +16,11 @@ import math
 import re
 import img2pdf
 import pprint
-from typing import Union, Any, List, Optional, Tuple
+from typing import Union, Any, List, Optional, Tuple, Set, Dict, Sequence
 import ast
 
 import utils
-from utils import ResponseCode, BoundingBox, Point
+from utils import BoundingBox, Point, ResponseCode, Image, Page, Size, Rotation
 import test
 
 pp = pprint.PrettyPrinter(width=41)
@@ -40,7 +41,7 @@ def parse_args():
   return vars(ap.parse_args())
 
 
-def check_files_exist(list_id):
+def check_files_exist(list_id: str) -> bool:
   # check if there is at least one walklist file
   walklist_dir_path = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.WALKLIST_DIR)
   has_walklists = False
@@ -68,7 +69,7 @@ def check_files_exist(list_id):
   return True
 
 """ Returns (barcode_coords, voter_id)"""
-def extract_barcode_info(barcode, image):
+def extract_barcode_info(barcode, image: Image) -> Optional[Tuple[BoundingBox, str]]:
   data = barcode.data.decode("utf-8")
 
   voter_id = re.sub(r'\W+', '', data) # remove any non-alphanumeric characters
@@ -81,7 +82,7 @@ def extract_barcode_info(barcode, image):
       print('Voter ID: {}'.format(voter_id))
   else:
     print('Invalid voter id {}, skipping.'.format(voter_id))
-    return None, None
+    return None
 
   voter_id = voter_id[:-2]  # remove the CA at the end
 
@@ -90,8 +91,7 @@ def extract_barcode_info(barcode, image):
 
   # draw image
   if utils.__DEBUG__:
-    # make a deep copy of the image to avoid annotating the original
-    markup_image = image.copy()
+    markup_image = image.raw_image
 
     # extract the the barcode
     pts = np.array([[[x, y] for (x, y) in barcode.polygon]], np.int32)
@@ -104,6 +104,7 @@ def extract_barcode_info(barcode, image):
     text = "{}".format(data)
     cv2.putText(markup_image, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
       0.5, (0, 0, 255), 2)
+    Image(markup_image).show()
 
     # print the barcode type and data to the terminal
     print("[INFO] Found barcode: {}".format(barcode))
@@ -111,25 +112,16 @@ def extract_barcode_info(barcode, image):
   return barcode_bb, voter_id
 
 
-def get_voter_id(image, bounding_box):
-  text = run_ocr(image, bounding_box)
-  print(text)
-  voter_id = text.split(' ')[0]
-
-  if utils.__DEBUG__:
-    print ("voter_id: ", voter_id)
-
-  return voter_id
-
-
-def get_response_for_barcode(barcode_coords, first_response_coords, page_size):
+def get_response_for_barcode(barcode_coords: BoundingBox, first_response_coords: BoundingBox, 
+                             page_size: Size) -> BoundingBox:
   ret_bb = BoundingBox(Point(first_response_coords.top_left.x, barcode_coords.top_left.y),
                              Point(first_response_coords.bottom_right.x, 
                              barcode_coords.bottom_right.y + first_response_coords.height))
   return ret_bb.add_padding(10, page_size)
 
 
-def get_response_including_barcode(barcode_coords, first_response_coords, page_size):
+def get_response_including_barcode(barcode_coords: BoundingBox, first_response_coords: BoundingBox,
+                                   page_size: Size) -> BoundingBox:
   ret_bb = BoundingBox(Point(0, barcode_coords.top_left.y),
                              Point(barcode_coords.bottom_right.x, 
                              barcode_coords.bottom_right.y + first_response_coords.height))
@@ -138,13 +130,13 @@ def get_response_including_barcode(barcode_coords, first_response_coords, page_s
 
 CONTOUR_LOWER_THRESH = 1900
 CONTOUR_UPPER_THRESH = 5000
-def get_circle_centers(diff) -> Tuple[List[Point], bool]:
+def get_circle_centers(raw_diff: np.array) -> Tuple[List[Point], bool]:
   # find contours in the thresholded image
-  _, contours, hierarchy = cv2.findContours(diff.copy(), cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+  _, contours, hierarchy = cv2.findContours(raw_diff.copy(), cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
  
   # loop over the contours, find the good ones and get the center of them
-  diff = cv2.cvtColor(diff, cv2.COLOR_GRAY2BGR)
-  mask = np.ones(diff.shape[:2], dtype="uint8") * 255
+  raw_diff = cv2.cvtColor(raw_diff, cv2.COLOR_GRAY2BGR)
+  mask = np.ones(raw_diff.shape[:2], dtype="uint8") * 255
   contour_centers = []
   has_error = False
   for c in contours:
@@ -163,15 +155,15 @@ def get_circle_centers(diff) -> Tuple[List[Point], bool]:
     elif area > CONTOUR_UPPER_THRESH:
       has_error = True
     else:
-      cv2.circle(diff, center.to_tuple(), 7, (0,0,255),-1)
+      cv2.circle(raw_diff, center.to_tuple(), 7, (0,0,255),-1)
       contour_centers.append(center)
       
     # show the image
     if utils.__DEBUG__:
-      cv2.drawContours(diff, [c], -1, (0,255,0), 3)
-      diff = cv2.bitwise_and(diff, diff, mask=mask)
-      cv2.drawContours(diff, [hull], -1, (0,255,0), 3)
-      utils.show_image(diff)
+      cv2.drawContours(raw_diff, [c], -1, (0,255,0), 3)
+      raw_diff = cv2.bitwise_and(raw_diff, raw_diff, mask=mask)
+      cv2.drawContours(raw_diff, [hull], -1, (0,255,0), 3)
+      Image(raw_diff).show()
 
   return contour_centers, has_error
 
@@ -180,18 +172,17 @@ def get_circle_centers(diff) -> Tuple[List[Point], bool]:
 # "selected"
 def centers_to_responses(centers: List[Point],
                          response_codes: List[ResponseCode], 
-                         aligned_response_codes) -> List[ResponseCode]:
+                         aligned_response_codes: Image) -> List[ResponseCode]:
   DISTANCE_THRESH = 35
   SPLIT_DIST_THRESH = 5
 
-  aligned_response_codes = cv2.cvtColor(aligned_response_codes, cv2.COLOR_GRAY2BGR)
   selected_responses = []
   for center in centers:
     (closest_code, closest_dist) = None, 9999999
     (second_code, second_dist) = None, 9999999
     for code in response_codes:
       if utils.__DEBUG__:
-        cv2.circle(aligned_response_codes, code.coords.to_tuple(), 4, (255, 0, 0), thickness=3)
+        cv2.circle(aligned_response_codes.raw_image, code.coords.to_tuple(), 4, (255, 0, 0), thickness=3)
 
       dist = center.calc_distance(code.coords)
 
@@ -213,35 +204,32 @@ def centers_to_responses(centers: List[Point],
       selected_responses.append(second_code)
 
   if utils.__DEBUG__:
-    utils.show_image(aligned_response_codes)
+    aligned_response_codes.show()
   return selected_responses
 
 
 # Figure out if this current response code is bolded or not and return the appropriate
 # diffed image and the aligned response codes.
-def get_diffed_response_codes(cur_rc: np.array, list_dir: str) -> Tuple[np.array, np.array]:
-  cur_rc = cv2.cvtColor(cur_rc, cv2.COLOR_BGR2GRAY)
-  cur_rc = utils.threshold(cur_rc)
+def get_diffed_response_codes(cur_rc: Image, list_dir: str) -> Tuple[Image, Image]:
+  cur_rc = cur_rc.threshold()
 
   # Load the reference response codes, bold and not bold version.
-  ref_rc = utils.load_image(list_dir + utils.RESPONSE_CODES_IMAGE_FILENAME)
-  ref_rc = cv2.cvtColor(ref_rc, cv2.COLOR_BGR2GRAY)
-  ref_rc = utils.threshold(ref_rc)
+  ref_rc = Image.from_file(list_dir + utils.RESPONSE_CODES_IMAGE_FILENAME, Rotation.NONE)
+  ref_rc = ref_rc.threshold()
 
-  bold_ref_rc = utils.load_image(list_dir + utils.BOLD_RESPONSE_CODES_IMAGE_FILENAME)
-  bold_ref_rc = cv2.cvtColor(bold_ref_rc, cv2.COLOR_BGR2GRAY)
-  bold_ref_rc = utils.threshold(bold_ref_rc)
+  bold_ref_rc = Image.from_file(list_dir + utils.BOLD_RESPONSE_CODES_IMAGE_FILENAME, Rotation.NONE)
+  bold_ref_rc = bold_ref_rc.threshold(bold_ref_rc)
 
   # Align and diff against both reference images.
-  aligned_rc, _ = utils.alignImages(cur_rc, ref_rc)
-  bold_aligned_rc, _ = utils.alignImages(cur_rc, bold_ref_rc)
+  aligned_rc = cur_rc.align_to(ref_rc)
+  bold_aligned_rc = cur_rc.align_to(bold_ref_rc)
 
-  diff = cv2.bitwise_xor(aligned_rc, ref_rc)
-  bold_diff = cv2.bitwise_xor(bold_aligned_rc, bold_ref_rc)
+  diff = aligned_rc.diff_against(ref_rc)
+  bold_diff = bold_aligned_rc.diff_against(bold_ref_rc)
 
   # Count how many white pixels are in each diff.
-  white_pixels = cv2.countNonZero(diff)
-  bold_white_pixels = cv2.countNonZero(bold_diff)
+  white_pixels = diff.numWhitePixels()
+  bold_white_pixels = bold_diff.numWhitePixels()
 
   # The one with the least white pixels should be the correct image.
   if white_pixels < bold_white_pixels:
@@ -253,25 +241,26 @@ def get_diffed_response_codes(cur_rc: np.array, list_dir: str) -> Tuple[np.array
 # Returns a list of circled response codes.
 def get_circled_responses(response_bounding_box: BoundingBox, 
                           response_codes: List[ResponseCode],
-                          page, list_dir) -> Tuple[Optional[List[ResponseCode]], bool]:
-  cur_response_codes = utils.get_roi(page, response_bounding_box)
+                          page, list_dir) -> Tuple[List[ResponseCode], bool]:
+  cur_response_codes = page.get_roi(response_bounding_box)
   diff, aligned_response_codes = get_diffed_response_codes(cur_response_codes, list_dir)
 
   # crop pixels to account for the alignment algo introducing whitespace
-  diff = diff[20:, 0:-10]
-  diff = cv2.medianBlur(diff, 5)
-  diff = utils.threshold(diff)
+  raw_diff = diff.raw_image
+  raw_diff = raw_diff[20:, 0:-10]
+  raw_diff = cv2.medianBlur(raw_diff, 5)
+  raw_diff = Image(raw_diff).threshold().grayscale().raw_image
   
-  diff = cv2.dilate(diff, np.ones((5,5),np.uint8), iterations = 2)
-  diff = cv2.medianBlur(diff, 5)
-  diff = cv2.medianBlur(diff, 5)
+  raw_diff = cv2.dilate(raw_diff, np.ones((5,5),np.uint8), iterations = 2)
+  raw_diff = cv2.medianBlur(raw_diff, 5)
+  raw_diff = cv2.medianBlur(raw_diff, 5)
   
   if utils.__DEBUG__:
-    utils.show_image(diff)
+    Image(raw_diff).show()
 
-  contour_centers, has_error = get_circle_centers(diff)
+  contour_centers, has_error = get_circle_centers(raw_diff)
 
-  circled_responses = None
+  circled_responses: List = []
   if not has_error:
     circled_responses = centers_to_responses(contour_centers, response_codes, 
                                              aligned_response_codes)
@@ -281,15 +270,13 @@ def get_circled_responses(response_bounding_box: BoundingBox,
 
 
 def manual_review(response_bounding_box: BoundingBox, 
-                  page, circled_responses: List[ResponseCode],
+                  page: Image, circled_responses: List[ResponseCode],
                   voter_id, response_codes: List[ResponseCode]) -> Tuple[bool, List[ResponseCode]]:
   user_verdict = None
-
   top_margin = 50
 
   # init response_image
-  responses_image = utils.get_roi(page, response_bounding_box)
-  responses_image = cv2.copyMakeBorder(responses_image, top_margin,0,0,0, cv2.BORDER_CONSTANT, value=(0,0,0))
+  responses_image = page.get_roi(response_bounding_box).add_border(top=top_margin)
 
   # get list of responses
   response_pairs = []
@@ -298,7 +285,7 @@ def manual_review(response_bounding_box: BoundingBox,
       response_pairs.append('Q{}: {}'.format(resp.question_number, resp.value))
 
       # add dots in the center of each highlighted response code
-      cv2.circle(responses_image, (resp.coords.x, resp.coords.y + top_margin), 6, (0,0,255),-1)
+      cv2.circle(responses_image.raw_image, (resp.coords.x, resp.coords.y + top_margin), 6, (0,0,255),-1)
 
     # convert to a string
     response_string = ", ".join(response_pairs)
@@ -306,16 +293,12 @@ def manual_review(response_bounding_box: BoundingBox,
     response_string = 'None'
   
   # annotate the response image
-  cv2.namedWindow("review", cv2.WINDOW_AUTOSIZE)
   responses_question = "Responses: {}. Is this correct? (y|n|c|m|h|g|l)".format(response_string)
-  cv2.putText(responses_image, responses_question, (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
   # keep looping until the y or n key is pressed
   while True:
     # display the image and wait for a keypress
-    cv2.imshow("review", responses_image)
-
-    key = cv2.waitKey(0) & 0xFF
+    key = responses_image.show(title="manual review", message=responses_question, resize=False)
    
     # if the 'y' key is pressed, user approves
     if key == ord("y"):
@@ -378,14 +361,14 @@ def manual_review(response_bounding_box: BoundingBox,
   return user_verdict, circled_responses
 
 
-def get_correct_responses(response_codes, shortcut_key=None):
+def get_correct_responses(response_codes: List[ResponseCode], shortcut_key=None) -> List[ResponseCode]:
   print('=======================================================')
   print("Please enter a comma-separated list of the correct responses. Enter 'n' if none.")
 
   # build dict of question: values pairs (for printing nicely)
   # and dict of answers_num: response pairs (for returning)
-  response_codes_by_question = {}
-  answers_to_code_objs = {}
+  response_codes_by_question: Dict = {}
+  answers_to_code_objs: Dict = {}
   for resp in response_codes:
     # put in response_codes_by_question
     if not resp.question_number in response_codes_by_question:
@@ -431,19 +414,19 @@ def get_correct_responses(response_codes, shortcut_key=None):
 
 
 # TODO: complete this function once have multi-response checking
-def error_check_responses(responses):
+def error_check_responses(responses: List[ResponseCode]) -> bool:
   return False
 
 
-def create_error_image(page, barcode_coords, first_response_coords):
+def create_error_image(page: Page, barcode_coords: BoundingBox, first_response_coords: BoundingBox) -> Image:
   full_response_bounding_box = get_response_including_barcode(barcode_coords, 
-      first_response_coords, page.shape[:2])
-  error_image = utils.get_roi(page, full_response_bounding_box)
-  return(error_image)
+      first_response_coords, page.size)
+  error_image = page.get_roi(full_response_bounding_box)
+  return error_image
 
 
-def save_responses(responses, voter_id, dict_writer):
-  question_to_responses = {}
+def save_responses(responses: List[ResponseCode], voter_id: str, dict_writer) -> None:
+  question_to_responses: Dict = {}
   for response in responses:
     key = "question_%s" % response.question_number
     if key not in question_to_responses:
@@ -454,64 +437,41 @@ def save_responses(responses, voter_id, dict_writer):
   dict_writer.writerow(question_to_responses)
 
 
-def generate_error_pages(error_images, skipped_pages, list_id):
-  # set page dimensions
-  width_inches = 11
-  height_inches = 8.5
-  dpi = 300
-  margin_inches = .25
-  width_pixels = int(width_inches * dpi)
-  height_pixels = int(height_inches * dpi)
-  margin_pixels = int(margin_inches * dpi)
+def generate_error_pages(error_images: List[Image], skipped_pages: List[Page], list_id: str) -> None:
+  page = utils.make_blank_page()
+  page.crop(top=int(2*utils.MARGIN), right=int(2*utils.MARGIN))  # to account for printing
 
   # calculate the number of error images that can fit on a page
-  error_image_height, error_image_width, channels = error_images[0].shape
-  num_images_per_page = math.floor((height_pixels - 2*margin_pixels) / error_image_height)
+  num_images_per_page = math.floor(page.size.h / error_images[0].size.h)
 
   # init error pages array
   error_pages = skipped_pages
   images_on_page = 0
-  page = None
 
   for i, error_image in enumerate(error_images):
     # Create new pages as necessary
-    if i % num_images_per_page == 0:
+    if i % num_images_per_page == 0 and i > 0:
       # save the previous page to the error_pages array
-      if i > 0:
-        error_pages.append(page)
-
-      # generate a new page and reset the images on page counter
-      page = np.ones((height_pixels,width_pixels,3), np.uint8)*255
+      page.add_border(top=int(2*utils.MARGIN), right=int(2*utils.MARGIN))
+      error_pages.append(page)
       images_on_page = 0
 
     # add images to the page
-    error_image_height, error_image_width = error_image.shape[:2]
-
-    # check if error image is too wide
-    content_width = width_pixels - (margin_pixels*2)
-    if error_image_width > content_width:
-      crop_amt = error_image_width - content_width
-      error_image = error_image[:, crop_amt: ]
-      error_image_height, error_image_width = error_image.shape[:2]
-
-    start_x = margin_pixels
-    end_x = start_x + error_image_width
-    start_y = (images_on_page * error_image_height) + margin_pixels
-    end_y = start_y + error_image_height
-
-    page[start_y:end_y, start_x:end_x] = error_image
+    insert_point = Point(0, images_on_page * error_image.size.h)
+    page = Page(page.insert_image(error_image, insert_point))
 
     # increment the images on page counter
     images_on_page += 1 
 
   # add the last page to the array
+  page.add_border(top=int(2*utils.MARGIN), right=int(2*utils.MARGIN))
   error_pages.append(page)
 
   # save out a pdf
   save_error_pages(error_pages, list_id)
 
 
-def save_error_pages(error_pages, list_id):
+def save_error_pages(error_pages: List[Page], list_id: str) -> None:
   # create error dir
   error_dir_path = '{}{}/{}'.format(utils.DATA_DIR, list_id, utils.ERROR_PAGES_DIR)
   if not os.path.exists(error_dir_path):
@@ -531,60 +491,57 @@ def save_error_pages(error_pages, list_id):
     f.write(img2pdf.convert(error_images))
 
 
-def scan_page(args, page_number, ref_page, ref_bounding_boxes, list_dir, results_scans, results_stats, results_errors, previous_scans,backup_writer):
-  page = utils.load_image(utils.get_page_filename(args['list_id'], page_number), args["rotate_dir"])
-  response_codes = utils.load_response_codes(args['list_id'])
+def scan_page(list_id: str, rotate_dir: Rotation, args, page_number: int, ref_page: Page, ref_bounding_boxes: Dict[str, BoundingBox], list_dir: str,
+              results_scans, results_stats, results_errors, previous_scans: dict, backup_writer):
+  page = Page.from_file(utils.get_page_filename(list_id, page_number), rotate_dir)
+  response_codes = utils.load_response_codes(list_id)
 
   # align page
-  raw_page = page.copy()
-  page, transform = utils.alignImages(page, ref_page)
+  aligned_page = page.align_to(ref_page)
   if utils.__DEBUG__:
-    utils.show_image(page)
+    aligned_page.show(title="aligned page")
 
   # confirm page has the correct list_id
-  page_list_id = utils.get_list_id_from_page(page, ref_bounding_boxes["list_id"])
-  if page_list_id != args['list_id']:
-    valid_id, page = handle_missing_page_id(page, raw_page, args['list_id'], ref_bounding_boxes["list_id"], page_number)
+  page_list_id = page.get_list_id(ref_bounding_boxes["list_id"])
+  if page_list_id != list_id:
+    valid_id, page = handle_missing_page_id(aligned_page, page, list_id, ref_bounding_boxes["list_id"], page_number)
     if not valid_id:
-      print('Error: Page {} has ID {}, but active ID is {}. Page {} has been skipped.'.format(page_number+1, page_list_id, args['list_id'], page_number+1))
-      results_errors['skipped_pages'].append({page_number: raw_page})
+      print('Error: Page {} has ID {}, but active ID is {}. Page {} has been skipped.'.format(page_number+1, page_list_id, list_id, page_number+1))
+      results_errors['skipped_pages'].append({page_number: page})
       return results_scans, results_stats, results_errors
 
   # find the barcodes in the image and decode each of the barcodes
   # Barcode scanner needs the unthresholded image.
-  barcodes = pyzbar.decode(page)
+  barcodes = pyzbar.decode(page.raw_image)
   if len(barcodes) == 0:
     print('Error: Cannot find barcodes. Page {} has been skipped.'.format(page_number+1))
-    results_errors['skipped_pages'].append({page_number: raw_page})
+    results_errors['skipped_pages'].append({page_number: page})
     return results_scans, results_stats, results_errors
 
   # loop over the detected barcodes
-  voter_ids = set()
+  voter_ids: Set = set()
   for barcode in barcodes:
     results_scans, results_stats, results_errors = scan_barcode(barcode, page, ref_bounding_boxes, list_dir, response_codes, args, results_scans, results_stats, results_errors, previous_scans, backup_writer, voter_ids)
   check_num_barcodes(page, list_dir, len(voter_ids), results_stats)
 
   if utils.__DEBUG__:
-    utils.show_image(page)
+    page.show()
 
   return results_scans, results_stats, results_errors
 
 
-def check_num_barcodes(page, list_dir: str, num_scanned_barcodes: int, results_stats):
+def check_num_barcodes(page: Page, list_dir: str, num_scanned_barcodes: int, results_stats) -> None:
   # Manually loop and count barcodes
   num_actual_barcodes = 0
 
   for line_number in range(1, utils.MAX_BARCODES_ON_PAGE + 1):
-    line_bb = utils.get_line_bb(page, line_number, list_dir)
+    line_bb = page.get_line_bb(line_number, list_dir)
     # extract the barcode portion
     line_bb.top_left.x = line_bb.bottom_right.x - 700
-    barcode_roi = utils.get_roi(page, line_bb)
-    barcode_roi = cv2.cvtColor(barcode_roi, cv2.COLOR_BGR2GRAY)
-    barcode_roi = cv2.bitwise_not(barcode_roi)
-    barcode_roi = utils.threshold(barcode_roi)
+    barcode_roi = page.get_roi(line_bb).invert()
 
     BARCODE_EXISTS_THRESHOLD = 20000  # if a barcode exists in the area it averages 29k black pixels.
-    if cv2.countNonZero(barcode_roi) > BARCODE_EXISTS_THRESHOLD:
+    if barcode_roi.numWhitePixels() > BARCODE_EXISTS_THRESHOLD:
       num_actual_barcodes += 1
     else:
       break  # we have likely reached the end of the page.
@@ -595,49 +552,47 @@ def check_num_barcodes(page, list_dir: str, num_scanned_barcodes: int, results_s
     results_stats["num_missed_barcodes"] += num_actual_barcodes - num_scanned_barcodes
 
 
-def handle_missing_page_id(page, raw_page, list_id, id_bounding_box, page_number):
+def handle_missing_page_id(aligned_page: Page, original_page: Page, 
+                           list_id: str, id_bounding_box: BoundingBox, page_number: int) -> Tuple[bool, Page]:
   # to check if it's a homography issue, see if the list ID is visible on the raw page
-  test_id = utils.get_list_id_from_page(raw_page, id_bounding_box)
+  test_id = original_page.get_list_id(id_bounding_box)
   if test_id == list_id:
     print('Homography error on page {}, using uncorrected page instead.'.format(page_number))
-    return True, raw_page
+    return True, original_page
 
   # didn't find on raw page, ask the user to confirm the ID
-  id_area = utils.get_roi(raw_page, id_bounding_box)
-  top_margin = 30
-  id_area = cv2.copyMakeBorder(id_area, top_margin,0,0,0, cv2.BORDER_CONSTANT, value=(0,0,0))
+  id_area = original_page.get_roi(id_bounding_box)
+  id_area = id_area.add_border(top=30)
 
   # annotate the response image
-  cv2.namedWindow("review", cv2.WINDOW_AUTOSIZE)
   question = "ID: {}? (y|n)".format(list_id)
-  cv2.putText(id_area, question, (0, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
   # keep looping until the y or n key is pressed
   while True:
     # display the image and wait for a keypress
-    cv2.imshow("review", id_area)
-
-    key = cv2.waitKey(0) & 0xFF
+    key = id_area.show(title="review", message=question, resize=False)
    
     # if the 'y' key is pressed, user approves
     if key == ord("y"):
       cv2.destroyAllWindows()
-      return True, raw_page
+      return True, original_page
    
     # if the 'n' key is pressed, user rejects
     elif key == ord("n"):
       cv2.destroyAllWindows()
       break
 
-  return False, page
+  return False, aligned_page
 
 
 def scan_barcode(barcode, page, ref_bounding_boxes, list_dir, response_codes, args, results_scans, results_stats, results_errors, previous_scans, backup_writer, voter_ids) -> Tuple[list, dict, dict]:
-  (barcode_coords, voter_id) = extract_barcode_info(barcode, page)
+  barcode_info = extract_barcode_info(barcode, page)
 
   # skip if not a valid barcode
-  if not voter_id:
+  if not barcode_info:
     return results_scans, results_stats, results_errors
+
+  barcode_coords, voter_id = barcode_info
 
   # Check if the barcode has already been read, skip if so.
   if voter_id in voter_ids:
@@ -658,13 +613,13 @@ def scan_barcode(barcode, page, ref_bounding_boxes, list_dir, response_codes, ar
     if utils.__DEBUG__:
       cv2.rectangle(page, barcode_coords.top_left.to_tuple(), barcode_coords.bottom_right.to_tuple(), 
                     (255, 0, 255), 3)
-      utils.show_image(page)
+      page.show()
 
     # Get the corresponding response codes region
-    response_bounding_box = get_response_for_barcode(barcode_coords, ref_bounding_boxes["response_codes"], page.shape[:2])
+    response_bounding_box = get_response_for_barcode(barcode_coords, ref_bounding_boxes["response_codes"], page.size)
 
     # Figure out which ones are circled
-    ref_response_codes = utils.load_image(list_dir + utils.RESPONSE_CODES_IMAGE_FILENAME)
+    ref_response_codes = Page.from_file(list_dir + utils.RESPONSE_CODES_IMAGE_FILENAME, Rotation.NONE)
     circled_responses, has_error = get_circled_responses(response_bounding_box, response_codes, page, list_dir)
     has_error = has_error or error_check_responses(circled_responses)
 
@@ -694,11 +649,11 @@ def scan_barcode(barcode, page, ref_bounding_boxes, list_dir, response_codes, ar
   return results_scans, results_stats, results_errors
 
 
-def build_results_dict(voter_id, responses):
+def build_results_dict(voter_id: str, responses: List[ResponseCode]) -> dict:
   results = {}
   results['voter_id'] = voter_id
 
-  question_to_responses = {}
+  question_to_responses: Dict = {}
   for response in responses:
     key = "question_{}".format(response.question_number)
     while key not in question_to_responses:
@@ -710,7 +665,7 @@ def build_results_dict(voter_id, responses):
   return results
 
 
-def write_to_backup(results_dict, backup_writer):
+def write_to_backup(results_dict, backup_writer) -> None:
   # build backup dict
   backup_dict = {'voter_id': results_dict['voter_id']}
   for question in results_dict['questions']:
@@ -720,7 +675,7 @@ def write_to_backup(results_dict, backup_writer):
   backup_writer.writerow(backup_dict)
 
 
-def output_results_csv(list_id, list_dir, results_scans):
+def output_results_csv(list_id: str, list_dir: str, results_scans) -> None:
   # get unique ordered list of questions
   questions_and_answers = [scan['questions'] for scan in results_scans]
   questions = list(set([k for d in questions_and_answers for k in d.keys()]))
@@ -746,14 +701,14 @@ def output_results_csv(list_id, list_dir, results_scans):
     formatted_results.append(formatted_scan)
 
   # Prep the output file
-  all_colnames = sorted(set().union(*(d.keys() for d in formatted_results)))
+  all_colnames: Sequence[str] = sorted(set().union(*(d.keys() for d in formatted_results)))
   with open("{}/results_{}.csv".format(list_dir, list_id), 'w+') as output_file:
     dict_writer = csv.DictWriter(output_file, all_colnames)
     dict_writer.writeheader()
     dict_writer.writerows(formatted_results)
 
 
-def show_statistics(results_stats, args):
+def show_statistics(results_stats, args) -> None:
   print('======== STATISTICS ========')
   print('Scanned {} barcodes.'.format(results_stats['num_scanned_barcodes']))
   print('Missed {} barcodes.'.format(results_stats['num_missed_barcodes']))
@@ -776,35 +731,35 @@ def prep_backup_csv(list_dir, list_id) -> Tuple[str, list]:
     return backup_filename, colnames
 
 
-def load_previous_scans(backup_filename, args) -> dict:
-
+def load_previous_scans(backup_filename: str, args) -> dict:
   # check if a backup files exists
-  if os.path.exists(backup_filename):
-    print('Loading previous scans')
-    previous_scans = utils.extractCSVtoDict(backup_filename)
-
-    # copy previous backup
-    prev_filename, prev_fileext = os.path.splitext(backup_filename)
-    new_filepath = prev_filename + '_prev' + prev_fileext
-    shutil.copy(backup_filename, new_filepath)
-
-    return previous_scans
-
-  else:
+  if not os.path.exists(backup_filename):
     print('No previous scans, creating backup file')
     return {}
 
+  print('Loading previous scans')
+  previous_scans = utils.extractCSVtoDict(backup_filename)
 
-def main():
+  # copy previous backup
+  prev_filename, prev_fileext = os.path.splitext(backup_filename)
+  new_filepath = prev_filename + '_prev' + prev_fileext
+  shutil.copy(backup_filename, new_filepath)
+
+  return previous_scans
+
+
+def main() -> None:
   args = parse_args()
-  check_files_exist(args['list_id'])
-  list_dir = utils.get_list_dir(args["list_id"])
+  list_id = args["list_id"]
+  check_files_exist(list_id)
+  list_dir: str = utils.get_list_dir(list_id)
+  rotate_dir = utils.map_rotation(args["rotate_dir"])
 
   ref_bounding_boxes = utils.load_ref_boxes(list_dir)
-  ref_page = utils.load_image(list_dir + utils.CLEAN_IMAGE_FILENAME)
+  ref_page = Page.from_file(list_dir + utils.CLEAN_IMAGE_FILENAME, rotate_dir)
 
   # init results object
-  results_scans = []
+  results_scans: list = []
 
   # things to track for error reporting
   results_stats = {}
@@ -814,12 +769,12 @@ def main():
   results_stats['incorrect_scans'] = []
 
   # stuff to build error PDF for human scanning
-  results_errors = {}
+  results_errors: dict = {}
   results_errors['errors_for_human'] = []
   results_errors['skipped_pages'] = []
 
   # write out to CSV backup as process the list
-  backup_filename, colnames = prep_backup_csv(list_dir, args['list_id'])
+  backup_filename, colnames = prep_backup_csv(list_dir, list_id)
   previous_scans = load_previous_scans(backup_filename, args)
 
   with open(backup_filename, mode='w') as backup_csv:
@@ -831,7 +786,7 @@ def main():
 
       print('===Scanning page {} of {} ==='.format(page_number+1, num_pages))
 
-      results_scans, results_stats, results_errors = scan_page(args, page_number, ref_page, ref_bounding_boxes, list_dir, results_scans, results_stats, results_errors, previous_scans, backup_writer)
+      results_scans, results_stats, results_errors = scan_page(list_id, rotate_dir, args, page_number, ref_page, ref_bounding_boxes, list_dir, results_scans, results_stats, results_errors, previous_scans, backup_writer)
 
   # output results
   output_results_csv(args['list_id'], list_dir, results_scans)

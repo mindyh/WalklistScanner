@@ -110,3 +110,4 @@ walklist/
 *.jpg
 *.pdf
 *.json
+*.sublime-*
